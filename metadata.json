@@ -1,0 +1,6 @@
+{
+  "name": "Student Learning Quiz",
+  "description": "An interactive, distraction-free language learning and flashcard quiz application with memory-only state management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
