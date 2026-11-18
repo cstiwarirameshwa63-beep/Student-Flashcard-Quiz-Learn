@@ -48,6 +48,10 @@ export function AuthModal({
         setError("Sign-in popup was closed before completing authentication.");
       } else if (code === "auth/popup-blocked") {
         setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
+      } else if (code === "auth/unauthorized-domain") {
+        setError(
+          `This domain (${window.location.hostname}) is not authorized for Google Sign-In yet. Add "${window.location.hostname}" in Firebase Console > Authentication > Settings > Authorized domains.`
+        );
       } else {
         setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
       }
