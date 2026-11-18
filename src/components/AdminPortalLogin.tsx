@@ -1,7 +1,18 @@
 import { useState, useEffect } from "react";
 import { signInWithPopup, signOut } from "firebase/auth";
-import { ShieldAlert, AlertCircle, ShieldCheck, Loader2, Sparkles, ArrowLeft } from "lucide-react";
+import {
+  ShieldAlert,
+  AlertCircle,
+  ShieldCheck,
+  Loader2,
+  Sparkles,
+  ArrowLeft,
+  Copy,
+  Check,
+  ExternalLink,
+} from "lucide-react";
 import { auth, googleProvider, isAllowedAdminEmail } from "../firebase";
+import firebaseConfig from "../../firebase-applet-config.json";
 
 interface AdminPortalLoginProps {
   externalError?: string;
@@ -11,6 +22,8 @@ interface AdminPortalLoginProps {
 export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPortalLoginProps) {
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState(externalError);
+  const [unauthorizedHost, setUnauthorizedHost] = useState("");
+  const [copiedHost, setCopiedHost] = useState(false);
 
   useEffect(() => {
     if (externalError) {
@@ -18,8 +31,20 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
     }
   }, [externalError]);
 
+  const handleCopyHost = async () => {
+    if (!unauthorizedHost) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedHost);
+      setCopiedHost(true);
+      setTimeout(() => setCopiedHost(false), 2000);
+    } catch {
+      // Clipboard API unavailable
+    }
+  };
+
   const handleAdminSignIn = async () => {
     setError("");
+    setUnauthorizedHost("");
     setIsSigningIn(true);
 
     try {
@@ -38,8 +63,10 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
       } else if (code === "auth/popup-blocked") {
         setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
       } else if (code === "auth/unauthorized-domain") {
+        const host = window.location.hostname;
+        setUnauthorizedHost(host);
         setError(
-          `This domain (${window.location.hostname}) is not authorized for Google Sign-In yet. Add "${window.location.hostname}" in Firebase Console > Authentication > Settings > Authorized domains.`
+          `This website domain (${host}) needs to be added to Firebase Authorized domains once before Google Sign-In can work here.`
         );
       } else {
         setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
@@ -83,10 +110,47 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
           {error && (
             <div
               role="alert"
-              className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-100 leading-relaxed font-semibold"
+              className="rounded-xl bg-red-50 p-3.5 text-xs text-red-800 border border-red-100 leading-relaxed space-y-2.5 font-semibold"
             >
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-600" />
+                <span>{error}</span>
+              </div>
+              {unauthorizedHost && (
+                <div className="pl-6 space-y-2 font-normal">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="rounded-lg bg-white px-2 py-1 text-[11px] font-mono text-red-900 border border-red-200 select-all">
+                      {unauthorizedHost}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopyHost}
+                      className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 border border-red-200 hover:bg-red-100/60 transition cursor-pointer"
+                    >
+                      {copiedHost ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-600" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3" />
+                          <span>Copy Domain</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <a
+                    href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-blue-700 hover:text-blue-800 underline"
+                  >
+                    <span>Open Firebase Console → Authorized domains</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
             </div>
           )}
 

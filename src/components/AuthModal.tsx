@@ -7,11 +7,15 @@ import {
   ShieldCheck,
   Loader2,
   Lock,
+  Copy,
+  Check,
+  ExternalLink,
 } from "lucide-react";
 import {
   auth,
   googleProvider,
 } from "../firebase";
+import firebaseConfig from "../../firebase-applet-config.json";
 
 interface AuthModalProps {
   onClose?: () => void;
@@ -30,9 +34,23 @@ export function AuthModal({
   const [preferredName, setPreferredName] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState("");
+  const [unauthorizedHost, setUnauthorizedHost] = useState("");
+  const [copiedHost, setCopiedHost] = useState(false);
+
+  const handleCopyHost = async () => {
+    if (!unauthorizedHost) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedHost);
+      setCopiedHost(true);
+      setTimeout(() => setCopiedHost(false), 2000);
+    } catch {
+      // Clipboard API unavailable
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     setError("");
+    setUnauthorizedHost("");
     setIsSigningIn(true);
 
     if (onLoginSuccess) {
@@ -49,8 +67,10 @@ export function AuthModal({
       } else if (code === "auth/popup-blocked") {
         setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
       } else if (code === "auth/unauthorized-domain") {
+        const host = window.location.hostname;
+        setUnauthorizedHost(host);
         setError(
-          `This domain (${window.location.hostname}) is not authorized for Google Sign-In yet. Add "${window.location.hostname}" in Firebase Console > Authentication > Settings > Authorized domains.`
+          `This website domain (${host}) needs to be added to Firebase Authorized domains once before Google Sign-In can work here.`
         );
       } else {
         setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
@@ -107,6 +127,7 @@ export function AuthModal({
             onClick={() => {
               setAuthMode("signin");
               setError("");
+              setUnauthorizedHost("");
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
               authMode === "signin"
@@ -122,6 +143,7 @@ export function AuthModal({
             onClick={() => {
               setAuthMode("signup");
               setError("");
+              setUnauthorizedHost("");
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
               authMode === "signup"
@@ -137,9 +159,46 @@ export function AuthModal({
         {/* Auth Body */}
         <div className="p-4 sm:p-6 space-y-4">
           {error && (
-            <div className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-100 leading-relaxed">
-              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
+            <div className="rounded-xl bg-red-50 p-3.5 text-xs text-red-800 border border-red-100 leading-relaxed space-y-2.5">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-600" />
+                <span>{error}</span>
+              </div>
+              {unauthorizedHost && (
+                <div className="pl-6 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="rounded-lg bg-white px-2 py-1 text-[11px] font-mono text-red-900 border border-red-200 select-all">
+                      {unauthorizedHost}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopyHost}
+                      className="inline-flex items-center gap-1 rounded-lg bg-white px-2.5 py-1 text-[11px] font-bold text-red-700 border border-red-200 hover:bg-red-100/60 transition cursor-pointer"
+                    >
+                      {copiedHost ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-600" />
+                          <span>Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3 w-3" />
+                          <span>Copy Domain</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <a
+                    href={`https://console.firebase.google.com/project/${firebaseConfig.projectId}/authentication/settings`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-blue-700 hover:text-blue-800 underline"
+                  >
+                    <span>Open Firebase Console → Authorized domains</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </div>
+              )}
             </div>
           )}
 
