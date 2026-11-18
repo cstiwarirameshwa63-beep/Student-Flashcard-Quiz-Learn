@@ -1,0 +1,149 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'cs.tiwarirameshwa63@gmail.com';
+    }
+
+    // --- Validation Blueprints ---
+    function isValidStudent(data) {
+      return data.keys().hasAll(['uid', 'name', 'email', 'avatarSeed', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'name', 'email', 'avatarSeed', 'role', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 150
+        && data.avatarSeed is string && data.avatarSeed.size() >= 1 && data.avatarSeed.size() <= 150
+        && data.role is string && (data.role == 'student' || data.role == 'admin')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidQuizAttempt(data) {
+      return data.keys().hasAll(['studentUid', 'studentName', 'moduleId', 'moduleTitle', 'language', 'level', 'score', 'total', 'timestamp', 'createdAt'])
+        && data.keys().hasOnly(['studentUid', 'studentName', 'moduleId', 'moduleTitle', 'language', 'level', 'score', 'total', 'timestamp', 'createdAt'])
+        && isValidId(data.studentUid)
+        && data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100
+        && isValidId(data.moduleId) && data.moduleId.size() <= 100
+        && data.moduleTitle is string && data.moduleTitle.size() >= 1 && data.moduleTitle.size() <= 150
+        && data.language is string && data.language.size() >= 1 && data.language.size() <= 50
+        && data.level is string && (data.level == 'Beginner' || data.level == 'Intermediate' || data.level == 'Advanced')
+        && data.total is int && data.total >= 1 && data.total <= 100
+        && data.score is int && data.score >= 0 && data.score <= data.total
+        && data.timestamp is int && data.timestamp >= 0
+        && data.createdAt is timestamp;
+    }
+
+    function isValidModule(data) {
+      return data.keys().hasAll(['id', 'title', 'description', 'language', 'flag', 'level', 'category', 'isPublished', 'cards', 'updatedBy', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'title', 'description', 'language', 'flag', 'level', 'category', 'isPublished', 'cards', 'updatedBy', 'updatedAt'])
+        && isValidId(data.id) && data.id.size() <= 64
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.description is string && data.description.size() >= 1 && data.description.size() <= 500
+        && data.language is string && data.language.size() >= 1 && data.language.size() <= 50
+        && data.flag is string && data.flag.size() >= 1 && data.flag.size() <= 16
+        && data.level is string && (data.level == 'Beginner' || data.level == 'Intermediate' || data.level == 'Advanced')
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && data.isPublished is bool
+        && data.cards is list && data.cards.size() >= 1 && data.cards.size() <= 50 && data.cards[0] is map
+        && isValidId(data.updatedBy)
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+    match /students/{studentId} {
+      allow get: if isValidId(studentId) && (isOwner(studentId) || isAdmin());
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.uid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(studentId)
+        && isOwner(studentId)
+        && isValidStudent(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().email == request.auth.token.email
+        && (incoming().role == 'student' || isAdmin())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(studentId)
+        && isValidStudent(incoming())
+        && incoming().uid == existing().uid
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            isOwner(studentId)
+            && incoming().role == existing().role
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'avatarSeed', 'updatedAt'])
+          )
+        );
+      allow delete: if isValidId(studentId) && isAdmin();
+    }
+
+    match /quizAttempts/{attemptId} {
+      allow get: if isValidId(attemptId) && isVerifiedUser() && (existing().studentUid == request.auth.uid || isAdmin());
+      allow list: if isAdmin() || (isVerifiedUser() && resource.data.studentUid == request.auth.uid);
+      allow create: if isVerifiedUser()
+        && isValidId(attemptId)
+        && isValidQuizAttempt(incoming())
+        && incoming().studentUid == request.auth.uid
+        && exists(/databases/$(database)/documents/students/$(request.auth.uid))
+        && incoming().createdAt == request.time;
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(attemptId) && (existing().studentUid == request.auth.uid || isAdmin());
+    }
+
+    match /modules/{moduleId} {
+      allow get: if isValidId(moduleId) && (existing().isPublished == true || isAdmin());
+      allow list: if isAdmin() || resource.data.isPublished == true;
+      allow create: if isAdmin()
+        && isValidId(moduleId)
+        && isValidModule(incoming())
+        && incoming().id == moduleId
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(moduleId)
+        && isValidModule(incoming())
+        && incoming().id == existing().id
+        && incoming().updatedBy == request.auth.uid
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'language', 'flag', 'level', 'category', 'isPublished', 'cards', 'updatedBy', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(moduleId);
+    }
+
+    match /admins/{adminId} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -28,28 +28,33 @@ export interface QuizProgress {
 }
 
 export interface QuizAttempt {
+  id?: string;
+  studentUid?: string;
+  studentName?: string;
   moduleId: string;
   moduleTitle: string;
   language: string;
+  level?: "Beginner" | "Intermediate" | "Advanced";
   score: number;
   total: number;
   timestamp: number;
 }
 
 export interface StudentProgressData {
+  uid?: string;
   email: string;
   name: string;
   avatarSeed: string;
+  role?: "student" | "admin";
   attempts: QuizAttempt[];
-  password?: string;
 }
 
 export interface UserProfile {
+  uid: string;
   name: string;
   email: string;
   avatarSeed: string;
   role: "student" | "admin";
-  password?: string;
 }
 
 export type ViewMode = "dashboard" | "study" | "quiz" | "admin_edit" | "progress";

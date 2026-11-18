@@ -11,7 +11,8 @@ import {
   HelpCircle,
   FileText,
   Eye,
-  ArrowLeftRight
+  ArrowLeftRight,
+  AlertTriangle
 } from "lucide-react";
 import { LearningModule, Flashcard, QuizProgress } from "../types";
 import { FlashcardDeck } from "./FlashcardDeck";
@@ -19,7 +20,7 @@ import { QuizSection } from "./QuizSection";
 
 interface QuizQuestionEditorProps {
   module: LearningModule;
-  onSave: (updatedCards: Flashcard[]) => void;
+  onSave: (updatedCards: Flashcard[], keepOpen?: boolean) => Promise<void> | void;
   onCancel: () => void;
 }
 
@@ -28,6 +29,8 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
   const [activeCardId, setActiveCardId] = useState<string | null>(cards[0]?.id || null);
   const [successMessage, setSuccessMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [pendingDeleteCard, setPendingDeleteCard] = useState<Flashcard | null>(null);
+  const [isDeletingCard, setIsDeletingCard] = useState(false);
 
   // Preview Sandbox States
   const [isPreviewing, setIsPreviewing] = useState(false);
@@ -90,25 +93,43 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
     setTimeout(() => setSuccessMessage(""), 3000);
   };
 
-  const handleDeleteCard = (cardId: string) => {
+  const requestDeleteCard = (card: Flashcard) => {
     if (cards.length <= 1) {
       setErrorMessage("A module must have at least one flashcard/question.");
       setTimeout(() => setErrorMessage(""), 3000);
       return;
     }
+    setPendingDeleteCard(card);
+  };
 
-    const indexToDelete = cards.findIndex((c) => c.id === cardId);
-    const updatedCards = cards.filter((c) => c.id !== cardId);
-    setCards(updatedCards);
-
-    // Set new active card
-    if (activeCardId === cardId) {
-      const newActiveIndex = Math.max(0, indexToDelete - 1);
-      setActiveCardId(updatedCards[newActiveIndex]?.id || null);
+  const handleConfirmDeleteCard = async () => {
+    if (!pendingDeleteCard) return;
+    if (cards.length <= 1) {
+      setPendingDeleteCard(null);
+      setErrorMessage("A module must have at least one flashcard/question.");
+      setTimeout(() => setErrorMessage(""), 3000);
+      return;
     }
 
-    setSuccessMessage("Card deleted successfully.");
-    setTimeout(() => setSuccessMessage(""), 3000);
+    setIsDeletingCard(true);
+    try {
+      const cardId = pendingDeleteCard.id;
+      const indexToDelete = cards.findIndex((c) => c.id === cardId);
+      const updatedCards = cards.filter((c) => c.id !== cardId);
+      setCards(updatedCards);
+
+      if (activeCardId === cardId) {
+        const newActiveIndex = Math.max(0, indexToDelete - 1);
+        setActiveCardId(updatedCards[newActiveIndex]?.id || null);
+      }
+
+      await onSave(updatedCards, true);
+      setPendingDeleteCard(null);
+      setSuccessMessage("Flashcard deleted and saved.");
+      setTimeout(() => setSuccessMessage(""), 3000);
+    } finally {
+      setIsDeletingCard(false);
+    }
   };
 
   const handleSaveChanges = () => {
@@ -228,7 +249,7 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
                 });
               }}
               onGoBack={() => setIsPreviewing(false)}
-              user={{ name: "Admin (Sandbox Preview)", email: "admin@quiz.co", avatarSeed: "admin-pre", role: "admin" }}
+              user={{ uid: "admin-preview", name: "Admin (Sandbox Preview)", email: "admin@quiz.co", avatarSeed: "admin-pre", role: "admin" }}
               sessionStats={[]}
             />
           )}
@@ -343,10 +364,10 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleDeleteCard(card.id);
+                    requestDeleteCard(card);
                   }}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 focus:opacity-100 transition cursor-pointer"
-                  title="Delete question"
+                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 transition cursor-pointer shrink-0"
+                  title="Delete flashcard"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
@@ -359,11 +380,21 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
         <div className="lg:col-span-8 bg-white border border-gray-100 rounded-2xl p-6 shadow-md shadow-gray-50 space-y-6">
           {activeCard ? (
             <div className="space-y-6">
-              <div className="border-b border-gray-50 pb-4">
-                <h3 className="text-sm font-bold text-sky-950 flex items-center gap-1.5">
-                  <FileText className="h-4.5 w-4.5" /> Question Properties
-                </h3>
-                <p className="text-xs text-gray-400">Configure core terminology, vocabulary translations, and guides.</p>
+              <div className="border-b border-gray-50 pb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-bold text-sky-950 flex items-center gap-1.5">
+                    <FileText className="h-4.5 w-4.5" /> Question Properties
+                  </h3>
+                  <p className="text-xs text-gray-400">Configure core terminology, vocabulary translations, and guides.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => requestDeleteCard(activeCard)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-bold text-red-700 hover:bg-red-100 transition cursor-pointer shrink-0"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete Flashcard</span>
+                </button>
               </div>
 
               {/* Core translations */}
@@ -490,6 +521,44 @@ export function QuizQuestionEditor({ module, onSave, onCancel }: QuizQuestionEdi
           )}
         </div>
       </div>
+
+      {/* Confirmation Modal ("Are you sure?") */}
+      {pendingDeleteCard && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl border border-gray-100 text-left space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center text-red-600 shrink-0">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-gray-900">Are you sure?</h3>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  This will permanently delete the flashcard &ldquo;{pendingDeleteCard.foreignTerm}&rdquo; ({pendingDeleteCard.englishTranslation}) from this section. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteCard(null)}
+                disabled={isDeletingCard}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteCard}
+                disabled={isDeletingCard}
+                className="rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 shadow-sm transition cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingCard ? "Deleting..." : "Yes, Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

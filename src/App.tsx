@@ -1,66 +1,95 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
+import { onAuthStateChanged, signOut, User as FirebaseUser } from "firebase/auth";
+import {
+  collection,
+  doc,
+  getDoc,
+  setDoc,
+  addDoc,
+  updateDoc,
+  deleteDoc,
+  query,
+  where,
+  onSnapshot,
+  serverTimestamp,
+  writeBatch,
+} from "firebase/firestore";
+import {
+  auth,
+  db,
+  isAllowedAdminEmail,
+  OperationType,
+  handleFirestoreError,
+} from "./firebase";
 import { Header } from "./components/Header";
 import { AuthModal } from "./components/AuthModal";
+import { AdminPortalLogin } from "./components/AdminPortalLogin";
 import { FlashcardDeck } from "./components/FlashcardDeck";
 import { QuizSection } from "./components/QuizSection";
 import { QuizQuestionEditor } from "./components/QuizQuestionEditor";
 import { STATIC_MODULES } from "./data";
-import { LearningModule, QuizProgress, UserProfile, ViewMode, Flashcard, StudentProgressData, QuizAttempt } from "./types";
+import {
+  LearningModule,
+  QuizProgress,
+  UserProfile,
+  ViewMode,
+  Flashcard,
+  StudentProgressData,
+  QuizAttempt,
+} from "./types";
 import { StudentProgressDashboard } from "./components/StudentProgressDashboard";
 import {
   BookOpen,
   HelpCircle,
   Sparkles,
   Flame,
-  Award,
   Globe2,
-  ListRestart,
   Compass,
   CheckCircle,
   Database,
-  ArrowRight,
   Settings,
-  Users,
   UserCheck,
   BarChart3,
-  ArrowRightLeft
+  Loader2,
+  Lock,
 } from "lucide-react";
 
-const STORAGE_KEY = "language_quiz_student_accounts_v1";
-
-function getInitialStudents(): StudentProgressData[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
-    }
-  } catch {
-    // Graceful fallback if storage is restricted
-  }
-  return [];
+interface StoredStudentDoc {
+  uid: string;
+  name: string;
+  email: string;
+  avatarSeed: string;
+  role: "student" | "admin";
 }
 
+type PendingRedirect =
+  | { type: "quiz"; moduleId: string }
+  | { type: "progress" }
+  | null;
+
+const checkIsAdminPath = () => {
+  const path = window.location.pathname;
+  return path === "/admin" || path.startsWith("/admin/");
+};
+
 export default function App() {
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(checkIsAdminPath);
+  const [adminAccessDenied, setAdminAccessDenied] = useState("");
+  const [authReady, setAuthReady] = useState(false);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authLockedPrompt, setAuthLockedPrompt] = useState(false);
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
-  const [students, setStudents] = useState<StudentProgressData[]>(getInitialStudents);
 
-  // Sync registered student accounts and credentials to persistent storage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(students));
-    } catch {
-      // Graceful fallback
-    }
-  }, [students]);
-  
-  // Keep modules list in React memory state so admins can dynamically edit questions/quiz options
-  const [modules, setModules] = useState<LearningModule[]>(STATIC_MODULES);
+  const [studentDocs, setStudentDocs] = useState<StoredStudentDoc[]>([]);
+  const [allAttempts, setAllAttempts] = useState<QuizAttempt[]>([]);
+  const [moduleOverrides, setModuleOverrides] = useState<Record<string, LearningModule>>({});
+  const pendingLoginRef = useRef<{ preferredName?: string }>({});
+  const pendingRedirectRef = useRef<PendingRedirect>(null);
+
+  const [modules] = useState<LearningModule[]>(STATIC_MODULES);
 
   // Filters for multi-level selection
   const [selectedLanguage, setSelectedLanguage] = useState<string>("All");
@@ -104,12 +133,15 @@ export default function App() {
   const allLevelModules = useMemo(() => {
     const result: LearningModule[] = [];
     modules.forEach((m) => {
-      result.push(getLevelModule(m, "Beginner"));
-      result.push(getLevelModule(m, "Intermediate"));
-      result.push(getLevelModule(m, "Advanced"));
+      const beginner = getLevelModule(m, "Beginner");
+      const intermediate = getLevelModule(m, "Intermediate");
+      const advanced = getLevelModule(m, "Advanced");
+      result.push(moduleOverrides[beginner.id] || beginner);
+      result.push(moduleOverrides[intermediate.id] || intermediate);
+      result.push(moduleOverrides[advanced.id] || advanced);
     });
     return result;
-  }, [modules]);
+  }, [modules, moduleOverrides]);
 
   const [quizProgress, setQuizProgress] = useState<QuizProgress>({
     currentCardIndex: 0,
@@ -118,10 +150,240 @@ export default function App() {
     isCompleted: false,
   });
 
-  // Keep transient in-memory record of module scores during the active session only
-  const [sessionStats, setSessionStats] = useState<
-    Array<{ moduleId: string; score: number; total: number; timestamp: number }>
-  >([]);
+  // Sync hidden /admin route detection
+  useEffect(() => {
+    const handlePopState = () => {
+      setIsAdminRoute(checkIsAdminPath());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
+  // Firebase Auth state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) {
+        setFirebaseUser(null);
+        setUser(null);
+        setStudentDocs([]);
+        setAllAttempts([]);
+        setActiveModuleId(null);
+        setViewMode("dashboard");
+        setAuthReady(true);
+        return;
+      }
+
+      const isAllowedAdmin = Boolean(
+        fbUser.emailVerified && isAllowedAdminEmail(fbUser.email)
+      );
+
+      if (isAdminRoute && !isAllowedAdmin) {
+        setAdminAccessDenied(
+          "Access denied. This Google account is not authorized for the Admin Portal."
+        );
+        await signOut(auth);
+        setFirebaseUser(null);
+        setUser(null);
+        setStudentDocs([]);
+        setAllAttempts([]);
+        setAuthReady(true);
+        return;
+      }
+
+      setAdminAccessDenied("");
+      setFirebaseUser(fbUser);
+
+      const opts = pendingLoginRef.current;
+      pendingLoginRef.current = {};
+
+      // Only grant admin role inside the hidden /admin route for the allowlisted admin email
+      const roleToUse: "student" | "admin" =
+        isAdminRoute && isAllowedAdmin ? "admin" : "student";
+
+      const fallbackName =
+        fbUser.displayName || fbUser.email?.split("@")[0] || "Learner";
+      const requestedName = (opts.preferredName || fallbackName).trim().slice(0, 100);
+      const cleanEmail = (fbUser.email || "user@example.com").slice(0, 150);
+
+      const studentRef = doc(db, "students", fbUser.uid);
+      let finalName = requestedName;
+      let finalAvatarSeed = fbUser.uid.slice(0, 150);
+
+      try {
+        const existingSnap = await getDoc(studentRef);
+        if (!existingSnap.exists()) {
+          await setDoc(studentRef, {
+            uid: fbUser.uid,
+            name: requestedName,
+            email: cleanEmail,
+            avatarSeed: finalAvatarSeed,
+            role: isAllowedAdmin ? "admin" : "student",
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          const data = existingSnap.data() as StoredStudentDoc;
+          finalName = opts.preferredName ? requestedName : data.name || requestedName;
+          finalAvatarSeed = data.avatarSeed || finalAvatarSeed;
+          if (opts.preferredName && opts.preferredName !== data.name) {
+            await updateDoc(studentRef, {
+              name: requestedName,
+              updatedAt: serverTimestamp(),
+            });
+          }
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `students/${fbUser.uid}`);
+      }
+
+      setUser({
+        uid: fbUser.uid,
+        name: finalName,
+        email: cleanEmail,
+        avatarSeed: finalAvatarSeed,
+        role: roleToUse,
+      });
+      setShowAuthModal(false);
+      setAuthLockedPrompt(false);
+
+      const redirectTarget = pendingRedirectRef.current;
+      pendingRedirectRef.current = null;
+      if (!isAdminRoute && redirectTarget) {
+        if (redirectTarget.type === "quiz") {
+          setQuizProgress({
+            currentCardIndex: 0,
+            score: 0,
+            answers: {},
+            isCompleted: false,
+          });
+          setActiveModuleId(redirectTarget.moduleId);
+          setViewMode("quiz");
+        } else if (redirectTarget.type === "progress") {
+          setViewMode("progress");
+        }
+      }
+
+      setAuthReady(true);
+    });
+
+    return () => unsubscribe();
+  }, [isAdminRoute]);
+
+  // Public published modules listener (guests & students both see updated flashcards)
+  useEffect(() => {
+    const modulesQuery = query(
+      collection(db, "modules"),
+      where("isPublished", "==", true)
+    );
+    const unsubModules = onSnapshot(
+      modulesQuery,
+      (snapshot) => {
+        const overrides: Record<string, LearningModule> = {};
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data() as LearningModule;
+          if (d && d.id && Array.isArray(d.cards)) {
+            overrides[docSnap.id] = d;
+          }
+        });
+        setModuleOverrides(overrides);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, "modules");
+      }
+    );
+
+    return () => unsubModules();
+  }, []);
+
+  // Private Firestore real-time listeners (only active when authReady && authenticated)
+  useEffect(() => {
+    if (!authReady || !firebaseUser || !user) return;
+
+    const attemptsQuery =
+      user.role === "admin"
+        ? collection(db, "quizAttempts")
+        : query(
+            collection(db, "quizAttempts"),
+            where("studentUid", "==", user.uid)
+          );
+
+    const unsubAttempts = onSnapshot(
+      attemptsQuery,
+      (snapshot) => {
+        const list: QuizAttempt[] = [];
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data() as QuizAttempt;
+          list.push({
+            id: docSnap.id,
+            studentUid: d.studentUid,
+            studentName: d.studentName,
+            moduleId: d.moduleId,
+            moduleTitle: d.moduleTitle,
+            language: d.language,
+            level: d.level,
+            score: d.score,
+            total: d.total,
+            timestamp: d.timestamp,
+          });
+        });
+        setAllAttempts(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, "quizAttempts");
+      }
+    );
+
+    const studentsQuery =
+      user.role === "admin"
+        ? collection(db, "students")
+        : query(collection(db, "students"), where("uid", "==", user.uid));
+
+    const unsubStudents = onSnapshot(
+      studentsQuery,
+      (snapshot) => {
+        const list: StoredStudentDoc[] = [];
+        snapshot.forEach((docSnap) => {
+          const d = docSnap.data() as StoredStudentDoc;
+          list.push({
+            uid: d.uid || docSnap.id,
+            name: d.name,
+            email: d.email,
+            avatarSeed: d.avatarSeed || docSnap.id,
+            role: d.role,
+          });
+        });
+        setStudentDocs(list);
+      },
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, "students");
+      }
+    );
+
+    return () => {
+      unsubAttempts();
+      unsubStudents();
+    };
+  }, [authReady, firebaseUser, user]);
+
+  // Combine Firestore student docs and quiz attempts for dashboards
+  const students: StudentProgressData[] = useMemo(() => {
+    return studentDocs.map((docItem) => ({
+      uid: docItem.uid,
+      email: docItem.email,
+      name: docItem.name,
+      avatarSeed: docItem.avatarSeed,
+      role: docItem.role,
+      attempts: allAttempts.filter((att) => att.studentUid === docItem.uid),
+    }));
+  }, [studentDocs, allAttempts]);
+
+  // Derive current user's quiz history from Firestore
+  const sessionStats = useMemo(() => {
+    if (!user) return [];
+    return allAttempts
+      .filter((att) => att.studentUid === user.uid)
+      .sort((a, b) => b.timestamp - a.timestamp);
+  }, [allAttempts, user]);
 
   // Find active module if selected from our in-memory state (matching either original or level-split IDs)
   const activeModule = allLevelModules.find((m) => m.id === activeModuleId) || modules.find((m) => m.id === activeModuleId);
@@ -145,52 +407,87 @@ export default function App() {
     });
   };
 
-  // 2. Crucial Mandated handleLogout function to explicitly clear user & session state
-  const handleLogout = () => {
-    setUser(null);
+  // 2. Logout handler via Firebase Auth
+  const handleLogout = async () => {
+    await signOut(auth);
     resetQuiz();
     setActiveModuleId(null);
     setViewMode("dashboard");
-    setSessionStats([]); // Wipes transient achievements!
   };
 
-  // 3. Automating quiz reset when initiating a module
+  // 3. Automating quiz reset and locking quiz mode for guests
   const handleSelectModule = (moduleId: string, mode: "study" | "quiz" | "admin_edit") => {
-    resetQuiz(); // Triggers automatically!
+    if (mode === "quiz" && !user) {
+      pendingRedirectRef.current = { type: "quiz", moduleId };
+      setAuthLockedPrompt(true);
+      setShowAuthModal(true);
+      return;
+    }
+    if (mode === "admin_edit" && (!isAdminRoute || user?.role !== "admin")) {
+      return;
+    }
+    resetQuiz();
     setActiveModuleId(moduleId);
+    setViewMode(mode);
+  };
+
+  // 3b. Header view mode switcher (locks progress dashboard for guests)
+  const handleViewModeChange = (mode: ViewMode) => {
+    if (mode === "progress" && !user) {
+      pendingRedirectRef.current = { type: "progress" };
+      setAuthLockedPrompt(true);
+      setShowAuthModal(true);
+      return;
+    }
     setViewMode(mode);
   };
 
   // 4. Automating quiz reset when navigating back to the dashboard
   const handleGoHome = () => {
-    resetQuiz(); // Triggers automatically!
+    resetQuiz();
     setActiveModuleId(null);
     setViewMode("dashboard");
   };
 
-  // Handle saving modified cards/questions by an admin
-  const handleSaveModuleCards = (updatedCards: Flashcard[]) => {
-    // Extract base module ID (e.g. "es-essentials" from "es-essentials_Beginner")
-    const baseId = activeModuleId?.split("_")[0] || "";
-    const level = activeModuleId?.split("_")[1] as "Beginner" | "Intermediate" | "Advanced" | undefined;
+  // Handle saving modified cards/questions by an admin to Firestore
+  const handleSaveModuleCards = async (updatedCards: Flashcard[], keepOpen = false) => {
+    if (!activeModule || !user || !isAdminRoute || user.role !== "admin") {
+      if (!keepOpen) setViewMode("dashboard");
+      return;
+    }
 
-    setModules((prev) =>
-      prev.map((m) => {
-        if (m.id === baseId && level) {
-          // Replace only the specific cards for this level
-          const startIdx = level === "Beginner" ? 0 : level === "Intermediate" ? 7 : 14;
-          const newCards = [...m.cards];
-          updatedCards.forEach((card, offset) => {
-            newCards[startIdx + offset] = card;
-          });
-          return { ...m, cards: newCards };
-        } else if (m.id === activeModuleId) {
-          return { ...m, cards: updatedCards };
-        }
-        return m;
-      })
-    );
-    setViewMode("dashboard");
+    const cleanCards = updatedCards.slice(0, 50).map((c) => ({
+      id: c.id,
+      foreignTerm: c.foreignTerm,
+      englishTranslation: c.englishTranslation,
+      pronunciation: c.pronunciation,
+      exampleSentenceForeign: c.exampleSentenceForeign,
+      exampleSentenceEnglish: c.exampleSentenceEnglish,
+      quizOptions: c.quizOptions,
+      correctAnswerIndex: c.correctAnswerIndex,
+    }));
+
+    const moduleDocId = activeModule.id.slice(0, 64);
+    try {
+      await setDoc(doc(db, "modules", moduleDocId), {
+        id: moduleDocId,
+        title: activeModule.title.slice(0, 120),
+        description: activeModule.description.slice(0, 500),
+        language: activeModule.language.slice(0, 50),
+        flag: activeModule.flag.slice(0, 16),
+        level: activeModule.level,
+        category: activeModule.category.slice(0, 80),
+        isPublished: true,
+        cards: cleanCards,
+        updatedBy: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `modules/${moduleDocId}`);
+    }
+    if (!keepOpen) {
+      setViewMode("dashboard");
+    }
   };
 
   // Handle answering questions in the active Quiz
@@ -211,37 +508,33 @@ export default function App() {
     });
   };
 
-  // Advance to the next question or complete the quiz
-  const handleNextQuestion = () => {
+  // Advance to the next question or complete and persist the quiz attempt
+  const handleNextQuestion = async () => {
     if (!activeModule) return;
 
     const isLastCard = quizProgress.currentCardIndex === activeModule.cards.length - 1;
 
     if (isLastCard) {
-      // Record session statistics in-memory before finishing
-      const attemptData = {
-        moduleId: activeModule.id,
-        moduleTitle: activeModule.title,
-        language: activeModule.language,
-        score: quizProgress.score,
-        total: activeModule.cards.length,
-        timestamp: Date.now(),
-      };
+      const total = Math.max(1, Math.min(activeModule.cards.length, 100));
+      const score = Math.max(0, Math.min(quizProgress.score, total));
 
-      setSessionStats((prev) => [
-        ...prev,
-        attemptData,
-      ]);
-
-      // If logged in as a student, update their directory record automatically
-      if (user && user.role === "student") {
-        setStudents((prev) =>
-          prev.map((s) =>
-            s.email.toLowerCase() === user.email.toLowerCase()
-              ? { ...s, attempts: [...s.attempts, attemptData] }
-              : s
-          )
-        );
+      if (user) {
+        try {
+          await addDoc(collection(db, "quizAttempts"), {
+            studentUid: user.uid,
+            studentName: user.name.slice(0, 100),
+            moduleId: activeModule.id.slice(0, 100),
+            moduleTitle: activeModule.title.slice(0, 150),
+            language: activeModule.language.slice(0, 50),
+            level: activeModule.level,
+            score,
+            total,
+            timestamp: Date.now(),
+            createdAt: serverTimestamp(),
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, "quizAttempts");
+        }
       }
 
       setQuizProgress((prev) => ({
@@ -256,38 +549,58 @@ export default function App() {
     }
   };
 
-  // Handle custom student profile
-  const handleLoginSuccess = (profile: UserProfile) => {
-    setUser(profile);
-    
-    // Automatically register student in classroom roster if not already present, preserving or updating privacy password
-    if (profile.role === "student") {
-      setStudents((prev) => {
-        const existingIndex = prev.findIndex((s) => s.email.toLowerCase() === profile.email.toLowerCase());
-        if (existingIndex >= 0) {
-          return prev.map((s, idx) =>
-            idx === existingIndex
-              ? {
-                  ...s,
-                  name: profile.name,
-                  password: profile.password !== undefined ? profile.password : s.password,
-                }
-              : s
-          );
-        } else {
-          return [
-            ...prev,
-            {
-              name: profile.name,
-              email: profile.email,
-              avatarSeed: profile.avatarSeed,
-              attempts: [],
-              password: profile.password,
-            },
-          ];
+  // Delete all quiz attempts for a student in Firestore
+  const handleResetStudentProgress = async (studentUid: string) => {
+    const targetAttempts = allAttempts.filter(
+      (att) => att.studentUid === studentUid && att.id
+    );
+    if (targetAttempts.length === 0) return;
+
+    try {
+      const batch = writeBatch(db);
+      targetAttempts.forEach((att) => {
+        if (att.id) {
+          batch.delete(doc(db, "quizAttempts", att.id));
         }
       });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, "quizAttempts");
     }
+  };
+
+  // Admin: delete a single quiz attempt record
+  const handleDeleteAttempt = async (attemptId: string) => {
+    if (!user || !isAdminRoute || user.role !== "admin") return;
+    try {
+      await deleteDoc(doc(db, "quizAttempts", attemptId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `quizAttempts/${attemptId}`);
+    }
+  };
+
+  // Admin: delete a student's profile and all their quiz records
+  const handleDeleteStudentRecord = async (studentUid: string) => {
+    if (!user || !isAdminRoute || user.role !== "admin" || studentUid === user.uid) return;
+    const targetAttempts = allAttempts.filter(
+      (att) => att.studentUid === studentUid && att.id
+    );
+    try {
+      const batch = writeBatch(db);
+      targetAttempts.forEach((att) => {
+        if (att.id) {
+          batch.delete(doc(db, "quizAttempts", att.id));
+        }
+      });
+      batch.delete(doc(db, "students", studentUid));
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `students/${studentUid}`);
+    }
+  };
+
+  const handleLoginSuccess = (preferredName?: string) => {
+    pendingLoginRef.current = { preferredName };
   };
 
   // Calculate session metrics
@@ -301,29 +614,37 @@ export default function App() {
         )
       : 0;
 
-  if (!user) {
+  if (!authReady) {
     return (
-      <div className="min-h-screen bg-slate-50/50 text-slate-900 flex flex-col font-sans selection:bg-blue-100 selection:text-blue-900 justify-center items-center py-12 px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-8 max-w-md">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100 text-xs font-semibold text-blue-700 mb-3">
-            <Sparkles className="h-3.5 w-3.5 animate-pulse text-blue-500" />
-            <span>Academic Mastery Platform</span>
-          </div>
-          <h1 className="text-3xl font-black text-slate-900 tracking-tight">
-            Clean Slate Language Engine
-          </h1>
-          <p className="text-xs text-slate-500 mt-2">
-            Please sign in as a student or admin coordinator to unlock customized flashcards, real-time feedback mentors, and pedagogical insight analytics.
-          </p>
-        </div>
-        <div className="w-full max-w-md">
-          <AuthModal
-            isEmbedded={true}
-            onLoginSuccess={handleLoginSuccess}
-            existingStudents={students}
-          />
-        </div>
+      <div className="min-h-screen bg-slate-50/50 flex flex-col items-center justify-center p-6 font-sans text-slate-700">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-600 mb-3" />
+        <p className="text-sm font-bold text-slate-900">Loading Student Quiz Learning...</p>
+        <p className="text-xs text-slate-400 mt-1">Connecting to your saved cloud progress</p>
       </div>
+    );
+  }
+
+  const handleToggleAdminRoute = () => {
+    const nextIsAdmin = !isAdminRoute;
+    const nextPath = nextIsAdmin ? "/admin" : "/";
+    window.history.pushState({}, "", nextPath);
+    setAdminAccessDenied("");
+    setActiveModuleId(null);
+    setViewMode("dashboard");
+    setIsAdminRoute(nextIsAdmin);
+  };
+
+  // Hidden /admin route requires verified admin login
+  if (isAdminRoute && (!user || user.role !== "admin")) {
+    return (
+      <AdminPortalLogin
+        externalError={adminAccessDenied}
+        onBackToHome={() => {
+          window.history.pushState({}, "", "/");
+          setAdminAccessDenied("");
+          setIsAdminRoute(false);
+        }}
+      />
     );
   }
 
@@ -332,13 +653,19 @@ export default function App() {
       {/* Header element */}
       <Header
         user={user}
-        onLoginClick={() => setShowAuthModal(true)}
+        isAdminRoute={isAdminRoute}
+        onLoginClick={() => {
+          pendingRedirectRef.current = null;
+          setAuthLockedPrompt(false);
+          setShowAuthModal(true);
+        }}
         onLogout={handleLogout}
         onGoHome={handleGoHome}
+        onToggleAdminRoute={handleToggleAdminRoute}
         activeModuleName={activeModule?.title}
         score={viewMode === "quiz" ? quizProgress.score : undefined}
         viewMode={viewMode}
-        onViewModeChange={setViewMode}
+        onViewModeChange={handleViewModeChange}
       />
 
       {/* Main workspace with distraction-free styling */}
@@ -355,7 +682,7 @@ export default function App() {
               <div className="max-w-2xl space-y-4">
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/10 px-3 py-1 text-xs font-bold text-blue-200 border border-blue-400/20">
                   <Sparkles className="h-3.5 w-3.5 text-amber-300" />
-                  <span>Memory-Only Flashcard Studio</span>
+                  <span>Cloud-Synced Language Studio</span>
                 </div>
                 
                 <h2 className="text-3xl sm:text-4xl font-extrabold tracking-tight">
@@ -372,14 +699,16 @@ export default function App() {
                 
                 <p className="text-sm sm:text-base text-blue-100/80 leading-relaxed font-normal">
                   Expand your horizons through high-retention 3D flashcards and recognition-based quiz matching. 
-                  {user?.role === "admin" 
-                    ? " You have administrative access. You can now modify questions, answer options, phonetic aids, or add/delete flashcards dynamically."
-                    : " Learn languages with personalized study decks and real-time interactive quiz feedback mentors."}
+                  {isAdminRoute && user?.role === "admin"
+                    ? " You have administrative access. You can monitor student progress, modify questions, or customize section flashcards in real time."
+                    : user
+                    ? " Learn languages with personalized study decks and real-time progress saved automatically to your account."
+                    : " Browse languages and study flashcards freely — sign in or create a free account whenever you're ready to take quizzes and track scores."}
                 </p>
               </div>
             </div>
 
-            {/* RAM Session Metrics Panel */}
+            {/* Cloud Session Metrics Panel */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center gap-4">
                 <div className="h-12 w-12 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
@@ -387,7 +716,7 @@ export default function App() {
                 </div>
                 <div>
                   <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Available Material</p>
-                  <p className="text-xl font-bold text-gray-900">{modules.length} Active Modules</p>
+                  <p className="text-xl font-bold text-gray-900">{modules.length} Languages · {allLevelModules.length} Sections</p>
                 </div>
               </div>
 
@@ -396,21 +725,29 @@ export default function App() {
                   <CheckCircle className="h-6 w-6" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Session Quizzes</p>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Saved Quizzes</p>
                   <p className="text-xl font-bold text-gray-900">
-                    {totalQuizzesCompleted > 0 ? `${totalQuizzesCompleted} Done` : "No Completed Quizzes"}
+                    {user
+                      ? totalQuizzesCompleted > 0
+                        ? `${totalQuizzesCompleted} Completed`
+                        : "No Completed Quizzes"
+                      : "Sign In to Track"}
                   </p>
                 </div>
               </div>
 
               <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm flex items-center gap-4">
-                <div className="h-12 w-12 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
+                <div className="h-12 w-12 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
                   <Database className="h-6 w-6" />
                 </div>
                 <div>
-                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Memory Mode Status</p>
+                  <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Cloud Storage Status</p>
                   <p className="text-xs font-semibold text-gray-700 leading-relaxed">
-                    {user?.role === "admin" ? "Admin Session: RAM Sandboxed" : "Student Session: Volatile RAM"}
+                    {isAdminRoute && user?.role === "admin"
+                      ? "Admin Console: Firestore Live Sync"
+                      : user
+                      ? "Student Profile: Firestore Saved"
+                      : "Guest Mode: Study Cards Open"}
                   </p>
                 </div>
               </div>
@@ -486,7 +823,9 @@ export default function App() {
                     <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block mb-1">Focus Strength</span>
                     <span className="text-sm font-extrabold text-emerald-600 truncate block py-1 bg-emerald-50 rounded-lg">
                       {sessionStats.length > 0 ? (
-                        modules.find((m) => m.id === sessionStats[0].moduleId)?.language || "Vocabulary"
+                        allLevelModules.find((m) => m.id === sessionStats[0].moduleId)?.language ||
+                        sessionStats[0].language ||
+                        "Vocabulary"
                       ) : (
                         "Not Started"
                       )}
@@ -512,12 +851,12 @@ export default function App() {
                     </h4>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                       {sessionStats.map((stat, i) => {
-                        const mod = modules.find((m) => m.id === stat.moduleId);
+                        const mod = allLevelModules.find((m) => m.id === stat.moduleId);
                         const pct = Math.round((stat.score / stat.total) * 100);
                         return (
-                          <div key={i} className="bg-white rounded-xl p-3 border border-blue-100/40 flex items-center justify-between text-xs shadow-sm">
+                          <div key={stat.id || i} className="bg-white rounded-xl p-3 border border-blue-100/40 flex items-center justify-between text-xs shadow-sm">
                             <div className="space-y-0.5 min-w-0">
-                              <p className="font-bold text-gray-950 truncate">{mod?.title || "Language"}</p>
+                              <p className="font-bold text-gray-950 truncate">{mod?.title || stat.moduleTitle || "Language"}</p>
                               <p className="text-[9px] text-gray-400 font-mono">
                                 {new Date(stat.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                               </p>
@@ -698,7 +1037,7 @@ export default function App() {
 
                       {/* Dual Interaction triggers / Triple if Admin */}
                       <div className={`grid gap-2.5 sm:gap-3 pt-5 sm:pt-6 border-t border-gray-50 mt-6 ${
-                        user?.role === "admin" ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"
+                        isAdminRoute && user?.role === "admin" ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"
                       }`}>
                         <button
                           onClick={() => handleSelectModule(module.id, "study")}
@@ -714,11 +1053,15 @@ export default function App() {
                           id={`btn-quiz-module-${module.id}`}
                           className="flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 py-2.5 text-xs font-bold text-white hover:bg-blue-700 shadow-sm hover:shadow transition cursor-pointer"
                         >
-                          <HelpCircle className="h-3.5 w-3.5" />
+                          {!user ? (
+                            <Lock className="h-3.5 w-3.5" />
+                          ) : (
+                            <HelpCircle className="h-3.5 w-3.5" />
+                          )}
                           <span>Take Quiz</span>
                         </button>
 
-                        {user?.role === "admin" && (
+                        {isAdminRoute && user?.role === "admin" && (
                           <button
                             onClick={() => handleSelectModule(module.id, "admin_edit")}
                             id={`btn-edit-module-${module.id}`}
@@ -752,17 +1095,17 @@ export default function App() {
           </div>
         )}
 
-        {/* 5. Study mode module wrapper */}
+        {/* 5. Study mode module wrapper (available to guests and signed-in users) */}
         {viewMode === "study" && activeModule && (
           <FlashcardDeck
             module={activeModule}
             onGoBack={handleGoHome}
-            onStartQuiz={() => setViewMode("quiz")}
+            onStartQuiz={() => handleSelectModule(activeModule.id, "quiz")}
           />
         )}
 
-        {/* 6. Quiz mode module wrapper */}
-        {viewMode === "quiz" && activeModule && (
+        {/* 6. Quiz mode module wrapper (authenticated users only) */}
+        {viewMode === "quiz" && activeModule && user && (
           <QuizSection
             module={activeModule}
             quizProgress={quizProgress}
@@ -775,8 +1118,8 @@ export default function App() {
           />
         )}
 
-        {/* 7. Admin Question Editor mode wrapper */}
-        {viewMode === "admin_edit" && activeModule && (
+        {/* 7. Admin Question Editor mode wrapper (hidden /admin route only) */}
+        {isAdminRoute && user?.role === "admin" && viewMode === "admin_edit" && activeModule && (
           <QuizQuestionEditor
             module={activeModule}
             onSave={handleSaveModuleCards}
@@ -784,33 +1127,39 @@ export default function App() {
           />
         )}
 
-        {/* 8. Student/Admin Progress Dashboard */}
-        {viewMode === "progress" && (
+        {/* 8. Student/Admin Progress Dashboard (authenticated users only) */}
+        {viewMode === "progress" && user && (
           <StudentProgressDashboard
             user={user}
             students={students}
-            onUpdateStudents={setStudents}
+            onResetStudentProgress={handleResetStudentProgress}
+            onDeleteAttempt={isAdminRoute && user.role === "admin" ? handleDeleteAttempt : undefined}
+            onDeleteStudentRecord={isAdminRoute && user.role === "admin" ? handleDeleteStudentRecord : undefined}
             modules={modules}
           />
         )}
       </main>
 
-      {/* Footer detailing architectural strict design choices */}
+      {/* Footer */}
       <footer className="border-t border-gray-100 bg-white py-6">
         <div className="mx-auto max-w-7xl px-4 text-center text-xs text-gray-400 space-y-1 sm:px-6 lg:px-8">
-          <p className="font-semibold text-gray-500">Student Learning Quiz Engine</p>
+          <p className="font-semibold text-gray-500">Student Quiz Learning</p>
           <p>
-            Designed & compiled strictly matching clean-slate directives. Volatile state management: no storage cookies or DB persistence utilized.
+            Cloud-synced language learning & progress tracking powered by Firebase Firestore.
           </p>
         </div>
       </footer>
 
-      {/* Sign In dialog block */}
-      {showAuthModal && (
+      {/* Sign In dialog block (student-only) */}
+      {showAuthModal && !isAdminRoute && (
         <AuthModal
-          onClose={() => setShowAuthModal(false)}
+          onClose={() => {
+            setShowAuthModal(false);
+            setAuthLockedPrompt(false);
+            pendingRedirectRef.current = null;
+          }}
           onLoginSuccess={handleLoginSuccess}
-          existingStudents={students}
+          lockedPrompt={authLockedPrompt}
         />
       )}
     </div>

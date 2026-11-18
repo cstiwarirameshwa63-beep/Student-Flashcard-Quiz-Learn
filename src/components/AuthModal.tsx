@@ -1,189 +1,91 @@
-import React, { useState } from "react";
-import { 
-  X, 
-  AlertCircle, 
-  ShieldAlert, 
-  GraduationCap, 
-  Eye, 
-  EyeOff 
+import { useState } from "react";
+import { signInWithPopup } from "firebase/auth";
+import {
+  X,
+  AlertCircle,
+  GraduationCap,
+  ShieldCheck,
+  Loader2,
+  Lock,
 } from "lucide-react";
-import { UserProfile, StudentProgressData } from "../types";
+import {
+  auth,
+  googleProvider,
+} from "../firebase";
 
 interface AuthModalProps {
   onClose?: () => void;
-  onLoginSuccess: (user: UserProfile) => void;
-  isEmbedded?: boolean;
-  existingStudents?: StudentProgressData[];
+  onLoginSuccess?: (preferredName?: string) => void;
+  initialMode?: "signin" | "signup";
+  lockedPrompt?: boolean;
 }
 
-export function AuthModal({ onClose, onLoginSuccess, isEmbedded = false, existingStudents = [] }: AuthModalProps) {
-  // Main view state: "login" or "register"
-  const [pageMode, setPageMode] = useState<"login" | "register">("login");
-  
-  // Role tab for login view
-  const [activeTab, setActiveTab] = useState<"student" | "admin">("student");
-
-  // Form input fields - strictly blank with no suggestions
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [adminName, setAdminName] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
-  const [studentPassword, setStudentPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+export function AuthModal({
+  onClose,
+  onLoginSuccess,
+  initialMode = "signin",
+  lockedPrompt = false,
+}: AuthModalProps) {
+  const [authMode, setAuthMode] = useState<"signin" | "signup">(initialMode);
+  const [preferredName, setPreferredName] = useState("");
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [error, setError] = useState("");
 
-  // Handle form submission
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogleSignIn = async () => {
     setError("");
+    setIsSigningIn(true);
 
-    // Admin login path
-    if (pageMode === "login" && activeTab === "admin") {
-      const cleanAdminName = adminName.trim();
-      if (!cleanAdminName) {
-        setError("Please enter your admin name.");
-        return;
-      }
-      if (!adminPassword.trim()) {
-        setError("Please enter the admin password.");
-        return;
-      }
-      if (adminPassword !== "admin") {
-        setError("Invalid Admin Password. Please verify your credentials.");
-        return;
-      }
-      onLoginSuccess({
-        name: cleanAdminName,
-        email: "admin@platform.edu",
-        avatarSeed: "admin_" + cleanAdminName.replace(/\s+/g, "_") + "_" + Date.now(),
-        role: "admin",
-      });
+    if (onLoginSuccess) {
+      onLoginSuccess(preferredName.trim() || undefined);
+    }
+
+    try {
+      await signInWithPopup(auth, googleProvider);
       if (onClose) onClose();
-      return;
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !cleanEmail.includes("@")) {
-      setError("Please enter a valid email address.");
-      return;
-    }
-
-    // CREATE ACCOUNT (manual)
-    if (pageMode === "register") {
-      const cleanName = name.trim();
-      if (!cleanName) {
-        setError("Please enter your full name.");
-        return;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+        setError("Sign-in popup was closed before completing authentication.");
+      } else if (code === "auth/popup-blocked") {
+        setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
       }
-
-      // Check if email already registered
-      const existing = existingStudents.find((s) => s.email.trim().toLowerCase() === cleanEmail);
-      if (existing) {
-        setError("An account with this email already exists. Click 'Sign in' in the corner to log in!");
-        return;
-      }
-
-      if (!studentPassword || studentPassword.trim().length < 3) {
-        setError("Please choose a password of at least 3 characters.");
-        return;
-      }
-
-      if (studentPassword !== confirmPassword) {
-        setError("Passwords do not match. Please verify both password fields.");
-        return;
-      }
-
-      onLoginSuccess({
-        name: cleanName,
-        email: cleanEmail,
-        avatarSeed: cleanName + Date.now(),
-        role: "student",
-        password: studentPassword.trim(),
-      });
-      if (onClose) onClose();
-      return;
+    } finally {
+      setIsSigningIn(false);
     }
-
-    // SIGN IN (manual)
-    if (!studentPassword) {
-      setError("Please enter your password to sign in.");
-      return;
-    }
-
-    const matched = existingStudents.find((s) => s.email.trim().toLowerCase() === cleanEmail);
-    if (!matched) {
-      setError("No student account found with this email. Click 'Create account' in the corner to sign up!");
-      return;
-    }
-
-    if (matched.password && matched.password !== studentPassword) {
-      setError("Incorrect password. Please verify your credentials.");
-      return;
-    }
-
-    onLoginSuccess({
-      name: matched.name,
-      email: matched.email,
-      avatarSeed: matched.avatarSeed,
-      role: "student",
-      password: matched.password,
-    });
-    if (onClose) onClose();
   };
 
-  const cardContent = (
-    <div className="relative w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-gray-100 text-left">
-      {/* Decorative Top Accent */}
-      <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 via-sky-500 to-indigo-500" />
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
+      <div className="relative w-full max-w-md max-h-[92vh] overflow-y-auto rounded-2xl bg-white shadow-xl border border-gray-100 text-left">
+        {/* Decorative Top Accent */}
+        <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-blue-500 via-sky-500 to-indigo-500" />
 
-      {/* Modal Header with the single line link in the corner */}
-      <div className="flex items-start justify-between px-4 sm:px-6 pt-5 sm:pt-6 pb-4 border-b border-gray-50">
-        <div>
-          <h3 className="text-lg font-bold text-gray-900">
-            {pageMode === "register"
-              ? "Create Student Account"
-              : activeTab === "student"
-              ? "Student Sign In"
-              : "Admin Portal"}
-          </h3>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {pageMode === "register"
-              ? "Create your account to take quizzes and track progress"
-              : activeTab === "student"
-              ? "Sign in to access your quizzes and track progress"
-              : "Enter your admin name and password to access course editor"}
-          </p>
-        </div>
+        {/* Modal Header */}
+        <div className="flex items-start justify-between px-4 sm:px-6 pt-5 sm:pt-6 pb-4 border-b border-gray-50">
+          <div>
+            {lockedPrompt && (
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 border border-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-700 mb-2">
+                <Lock className="h-3 w-3" />
+                <span>Account Required</span>
+              </div>
+            )}
+            <h3 className="text-lg font-bold text-gray-900">
+              {lockedPrompt
+                ? "Create a free account to continue"
+                : authMode === "signin"
+                ? "Student Sign In"
+                : "Create Account"}
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {lockedPrompt
+                ? "Sign in or create a free student account to take quizzes, save scores, and view your progress dashboard."
+                : "Sign in with Google to save your quiz scores & progress."}
+            </p>
+          </div>
 
-        {/* Single line in the corner */}
-        <div className="flex items-center gap-2">
-          {pageMode === "login" ? (
-            <button
-              type="button"
-              onClick={() => {
-                setPageMode("register");
-                setError("");
-              }}
-              className="text-xs font-bold text-blue-600 hover:text-blue-800 transition cursor-pointer hover:underline"
-            >
-              Create account →
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setPageMode("login");
-                setError("");
-              }}
-              className="text-xs font-bold text-blue-600 hover:text-blue-800 transition cursor-pointer hover:underline"
-            >
-              Sign in →
-            </button>
-          )}
-
-          {!isEmbedded && onClose && (
+          {onClose && (
             <button
               onClick={onClose}
               id="btn-close-auth"
@@ -193,223 +95,122 @@ export function AuthModal({ onClose, onLoginSuccess, isEmbedded = false, existin
             </button>
           )}
         </div>
-      </div>
 
-      {/* Role Tabs (Only on Login view) */}
-      {pageMode === "login" && (
+        {/* Sign In / Create Account Tabs (Student Only) */}
         <div className="grid grid-cols-2 border-b border-gray-100 bg-gray-50/50 p-1">
           <button
             type="button"
             onClick={() => {
-              setActiveTab("student");
+              setAuthMode("signin");
               setError("");
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
-              activeTab === "student"
+              authMode === "signin"
                 ? "bg-white text-blue-700 shadow-sm border border-gray-100"
                 : "text-gray-500 hover:text-gray-900"
             }`}
           >
             <GraduationCap className="h-4 w-4" />
-            <span>Student Login</span>
+            <span>Sign In</span>
           </button>
           <button
             type="button"
             onClick={() => {
-              setActiveTab("admin");
+              setAuthMode("signup");
               setError("");
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
-              activeTab === "admin"
-                ? "bg-white text-sky-700 shadow-sm border border-gray-100"
+              authMode === "signup"
+                ? "bg-white text-blue-700 shadow-sm border border-gray-100"
                 : "text-gray-500 hover:text-gray-900"
             }`}
           >
-            <ShieldAlert className="h-4 w-4" />
-            <span>Admin Portal</span>
+            <ShieldCheck className="h-4 w-4" />
+            <span>Create Account</span>
           </button>
         </div>
-      )}
 
-      {/* Modal Form */}
-      <form onSubmit={handleSubmit} className="p-4 sm:p-6 space-y-4">
-        {error && (
-          <div className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-100 leading-relaxed">
-            <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* CREATE ACCOUNT: Name Field */}
-        {pageMode === "register" && (
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-gray-700">Full Name</label>
-            <input
-              type="text"
-              placeholder=""
-              autoComplete="off"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                setError("");
-              }}
-              className="w-full rounded-xl border border-gray-200 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-              required
-            />
-          </div>
-        )}
-
-        {/* EMAIL FIELD (Student Login or Create Account) */}
-        {(pageMode === "register" || activeTab === "student") && (
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-gray-700">
-              Email Address
-            </label>
-            <input
-              type="email"
-              placeholder=""
-              autoComplete="off"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                setError("");
-              }}
-              className="w-full rounded-xl border border-gray-200 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-              required
-            />
-          </div>
-        )}
-
-        {/* PASSWORD FIELD */}
-        {(pageMode === "register" || activeTab === "student") && (
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-gray-700">
-              Password
-            </label>
-            <div className="relative">
-              <input
-                type={showPassword ? "text" : "password"}
-                placeholder=""
-                autoComplete="off"
-                value={studentPassword}
-                onChange={(e) => {
-                  setStudentPassword(e.target.value);
-                  setError("");
-                }}
-                className="w-full rounded-xl border border-gray-200 px-3.5 py-2 pr-10 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 cursor-pointer"
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
+        {/* Auth Body */}
+        <div className="p-4 sm:p-6 space-y-4">
+          {error && (
+            <div className="flex items-start gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-100 leading-relaxed">
+              <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
+              <span>{error}</span>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* CONFIRM PASSWORD (Only on Create Account) */}
-        {pageMode === "register" && (
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-gray-700">Confirm Password</label>
-            <div className="relative">
-              <input
-                type={showConfirmPassword ? "text" : "password"}
-                placeholder=""
-                autoComplete="off"
-                value={confirmPassword}
-                onChange={(e) => {
-                  setConfirmPassword(e.target.value);
-                  setError("");
-                }}
-                className="w-full rounded-xl border border-gray-200 px-3.5 py-2 pr-10 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 cursor-pointer"
-                tabIndex={-1}
-              >
-                {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Admin Name & Password Fields */}
-        {pageMode === "login" && activeTab === "admin" && (
-          <>
+          {authMode === "signup" && (
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-gray-700">Admin Name</label>
+              <label className="text-xs font-semibold text-gray-700">
+                Display Name <span className="text-gray-400 font-normal">(optional)</span>
+              </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Uses your Google name if left blank"
                 autoComplete="off"
-                value={adminName}
+                maxLength={100}
+                value={preferredName}
                 onChange={(e) => {
-                  setAdminName(e.target.value);
+                  setPreferredName(e.target.value);
                   setError("");
                 }}
                 className="w-full rounded-xl border border-gray-200 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                required
               />
             </div>
+          )}
 
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-gray-700">Admin Password</label>
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  placeholder=""
-                  autoComplete="off"
-                  value={adminPassword}
-                  onChange={(e) => {
-                    setAdminPassword(e.target.value);
-                    setError("");
-                  }}
-                  className="w-full rounded-xl border border-gray-200 px-3.5 py-2 pr-10 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-2.5 text-gray-400 hover:text-gray-600 cursor-pointer"
-                  tabIndex={-1}
-                >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
+          <div className="rounded-xl bg-blue-50/60 border border-blue-100 p-3.5 text-xs text-blue-900 space-y-1.5">
+            <div className="flex items-center gap-1.5 font-bold text-blue-800">
+              <ShieldCheck className="h-4 w-4 text-blue-600 shrink-0" />
+              <span>Private Cloud Progress Sync</span>
             </div>
-          </>
-        )}
+            <p className="text-[11px] text-blue-800/80 leading-relaxed">
+              Your student profile and quiz results are securely stored in Firebase Firestore under your Google account so your progress is always saved when you return.
+            </p>
+          </div>
 
-        {/* Action Button */}
-        <button
-          type="submit"
-          id="btn-auth-submit"
-          className="w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white bg-blue-600 shadow-md shadow-blue-100 hover:bg-blue-700 transition cursor-pointer"
-        >
-          {pageMode === "register"
-            ? "Create Account & Start Learning"
-            : activeTab === "admin"
-            ? "Authenticate & Edit"
-            : "Sign In"}
-        </button>
-      </form>
-    </div>
-  );
-
-  if (isEmbedded) {
-    return cardContent;
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
-      {cardContent}
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={isSigningIn}
+            id="btn-auth-submit"
+            className="w-full flex items-center justify-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-bold text-gray-800 shadow-sm hover:bg-gray-50 hover:border-gray-300 disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer"
+          >
+            {isSigningIn ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                <span>Connecting with Google...</span>
+              </>
+            ) : (
+              <>
+                <svg className="h-4 w-4 shrink-0" viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                    fill="#4285F4"
+                  />
+                  <path
+                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                    fill="#34A853"
+                  />
+                  <path
+                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
+                    fill="#FBBC05"
+                  />
+                  <path
+                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                    fill="#EA4335"
+                  />
+                </svg>
+                <span>
+                  {authMode === "signin"
+                    ? "Sign In with Google"
+                    : "Create Account with Google"}
+                </span>
+              </>
+            )}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

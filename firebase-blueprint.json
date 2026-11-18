@@ -1,0 +1,213 @@
+{
+  "entities": {
+    "StudentProfile": {
+      "title": "StudentProfile",
+      "description": "Registered learner or admin profile stored in Firestore",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Auth UID matching the document ID",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the learner",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified Google account email",
+          "minLength": 3,
+          "maxLength": 150
+        },
+        "avatarSeed": {
+          "type": "string",
+          "description": "Seed string for deterministic avatar color",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "role": {
+          "type": "string",
+          "enum": ["student", "admin"],
+          "description": "User role within the learning portal"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of initial profile creation"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of most recent profile update"
+        }
+      },
+      "required": ["uid", "name", "email", "avatarSeed", "role", "createdAt", "updatedAt"]
+    },
+    "QuizAttemptRecord": {
+      "title": "QuizAttemptRecord",
+      "description": "Immutable record of a completed language quiz attempt",
+      "type": "object",
+      "properties": {
+        "studentUid": {
+          "type": "string",
+          "description": "Firebase Auth UID of the student who completed the quiz",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Student name at the time of quiz completion",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "moduleId": {
+          "type": "string",
+          "description": "Identifier of the level-split learning module",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "moduleTitle": {
+          "type": "string",
+          "description": "Human-readable title of the module",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "language": {
+          "type": "string",
+          "description": "Language studied in the module",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "level": {
+          "type": "string",
+          "enum": ["Beginner", "Intermediate", "Advanced"],
+          "description": "Difficulty section of the module"
+        },
+        "score": {
+          "type": "integer",
+          "description": "Number of correct answers"
+        },
+        "total": {
+          "type": "integer",
+          "description": "Total number of questions in the quiz"
+        },
+        "timestamp": {
+          "type": "integer",
+          "description": "Client epoch milliseconds timestamp for chart ordering"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when attempt was logged"
+        }
+      },
+      "required": ["studentUid", "studentName", "moduleId", "moduleTitle", "language", "level", "score", "total", "timestamp", "createdAt"]
+    },
+    "LearningModuleOverride": {
+      "title": "LearningModuleOverride",
+      "description": "Admin-customized flashcard and quiz question overrides for a language module",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Base module ID",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "flag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "level": {
+          "type": "string",
+          "enum": ["Beginner", "Intermediate", "Advanced"]
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "isPublished": {
+          "type": "boolean"
+        },
+        "cards": {
+          "type": "array",
+          "description": "Flashcards and quiz options for this module"
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "title", "description", "language", "flag", "level", "category", "isPublished", "cards", "updatedBy", "updatedAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin role assignment document",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 150
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/StudentProfile" },
+      "description": "User profiles keyed by Firebase Auth UID"
+    },
+    "/quizAttempts/{attemptId}": {
+      "schema": { "$ref": "#/entities/QuizAttemptRecord" },
+      "description": "Quiz completion logs owned by studentUid and readable by admins"
+    },
+    "/modules/{moduleId}": {
+      "schema": { "$ref": "#/entities/LearningModuleOverride" },
+      "description": "Admin-customized flashcard and quiz overrides"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Elevated admin records"
+    }
+  }
+}

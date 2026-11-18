@@ -405,9 +405,9 @@ export function QuizSection({
             </button>
           </div>
 
-          {/* Clean Slate warning indicator */}
+          {/* Cloud persistence indicator */}
           <p className="text-[11px] text-gray-400 italic">
-            *No records of this quiz or score are saved to your browser database. Refreshing will start a completely blank session.
+            Your quiz score and progress history are automatically saved to your cloud profile.
           </p>
         </motion.div>
       </div>
@@ -530,8 +530,8 @@ export function QuizSection({
           <span className="rounded-md bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
             {module.flag} {module.language} Quiz
           </span>
-          <span className="flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 border border-amber-100 animate-pulse">
-            <Flame className="h-3.5 w-3.5" /> Volatile Score: {score}
+          <span className="flex items-center gap-1 rounded-md bg-amber-50 px-2.5 py-1 text-xs font-bold text-amber-700 border border-amber-100">
+            <Flame className="h-3.5 w-3.5" /> Score: {score}
           </span>
         </div>
       </div>

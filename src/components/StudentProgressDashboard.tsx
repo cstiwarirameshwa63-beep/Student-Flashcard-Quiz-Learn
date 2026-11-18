@@ -1,57 +1,60 @@
-import React, { useState, useMemo, FormEvent } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { 
   BarChart3, 
   TrendingUp, 
   Award, 
-  BookOpen, 
   Users, 
-  UserCheck, 
   History, 
-  ArrowRight, 
-  PlusCircle, 
   Trash2, 
   Activity, 
   Clock, 
   CheckCircle2, 
-  AlertCircle,
-  Sparkles,
-  ChevronRight,
-  User,
   Search,
-  Lock,
-  Unlock,
-  KeyRound,
   ShieldCheck,
-  Eye,
-  EyeOff,
-  X
+  AlertTriangle
 } from "lucide-react";
 import { StudentProgressData, QuizAttempt, UserProfile, LearningModule } from "../types";
 
 interface StudentProgressDashboardProps {
   user: UserProfile;
   students: StudentProgressData[];
-  onUpdateStudents: (updated: StudentProgressData[]) => void;
+  onResetStudentProgress: (studentUid: string) => Promise<void> | void;
+  onDeleteAttempt?: (attemptId: string) => Promise<void> | void;
+  onDeleteStudentRecord?: (studentUid: string) => Promise<void> | void;
   modules: LearningModule[];
 }
+
+type PendingDeleteAction =
+  | { kind: "reset_student"; uid: string; label: string; count: number }
+  | { kind: "delete_student"; uid: string; label: string }
+  | { kind: "delete_attempt"; attemptId: string; label: string };
 
 export function StudentProgressDashboard({ 
   user, 
   students, 
-  onUpdateStudents,
-  modules 
+  onResetStudentProgress,
+  onDeleteAttempt,
+  onDeleteStudentRecord,
+  modules: _modules 
 }: StudentProgressDashboardProps) {
   const [selectedStudentEmail, setSelectedStudentEmail] = useState<string>(
     user.role === "admin" ? (students[0]?.email || "") : user.email
   );
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"charts" | "logs">("charts");
-  const [showPasswordModal, setShowPasswordModal] = useState(false);
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmNewPassword, setConfirmNewPassword] = useState("");
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [passwordError, setPasswordError] = useState("");
-  const [passwordSuccess, setPasswordSuccess] = useState("");
+  const [isResetting, setIsResetting] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<PendingDeleteAction | null>(null);
+
+  useEffect(() => {
+    if (user.role === "admin" && students.length > 0) {
+      const stillExists = students.some(
+        (s) => s.email.toLowerCase() === selectedStudentEmail.toLowerCase()
+      );
+      if (!selectedStudentEmail || !stillExists) {
+        setSelectedStudentEmail(students[0].email);
+      }
+    }
+  }, [students, selectedStudentEmail, user.role]);
 
   // Filter students by search term for admin
   const filteredStudents = useMemo(() => {
@@ -440,50 +443,26 @@ export function StudentProgressDashboard({
     );
   };
 
-  const handleClearAttempts = () => {
-    const targetEmail = user.role === "admin" ? selectedStudentEmail : user.email;
-    const updatedStudents = students.map(s => {
-      if (s.email.toLowerCase() === targetEmail.toLowerCase()) {
-        return {
-          ...s,
-          attempts: []
-        };
+  const targetStudentUid =
+    user.role === "admin"
+      ? (viewedStudent as StudentProgressData).uid || ""
+      : user.uid;
+
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
+    setIsResetting(true);
+    try {
+      if (pendingDelete.kind === "reset_student") {
+        await onResetStudentProgress(pendingDelete.uid);
+      } else if (pendingDelete.kind === "delete_attempt" && onDeleteAttempt) {
+        await onDeleteAttempt(pendingDelete.attemptId);
+      } else if (pendingDelete.kind === "delete_student" && onDeleteStudentRecord) {
+        await onDeleteStudentRecord(pendingDelete.uid);
       }
-      return s;
-    });
-    onUpdateStudents(updatedStudents);
-  };
-
-  const handleSaveStudentPassword = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (newPassword.trim().length > 0 && newPassword.trim().length < 3) {
-      setPasswordError("Password must be at least 3 characters.");
-      return;
+      setPendingDelete(null);
+    } finally {
+      setIsResetting(false);
     }
-    if (newPassword.trim() && newPassword !== confirmNewPassword) {
-      setPasswordError("Passwords do not match.");
-      return;
-    }
-
-    const updatedStudents = students.map((s) => {
-      if (s.email.toLowerCase() === user.email.toLowerCase()) {
-        return {
-          ...s,
-          password: newPassword.trim() || undefined,
-        };
-      }
-      return s;
-    });
-
-    onUpdateStudents(updatedStudents);
-    setPasswordSuccess(newPassword.trim() ? "Password successfully updated! Your profile is now private." : "Password removed. Profile is now open.");
-    setTimeout(() => {
-      setShowPasswordModal(false);
-      setPasswordSuccess("");
-      setPasswordError("");
-      setNewPassword("");
-      setConfirmNewPassword("");
-    }, 1200);
   };
 
   return (
@@ -509,13 +488,38 @@ export function StudentProgressDashboard({
         {/* Dashboard Actions */}
         <div className="flex flex-wrap items-center gap-2 self-start md:self-center">
           <button
-            onClick={handleClearAttempts}
-            disabled={viewedStudent.attempts.length === 0}
+            onClick={() => {
+              if (!targetStudentUid) return;
+              setPendingDelete({
+                kind: "reset_student",
+                uid: targetStudentUid,
+                label: viewedStudent.name,
+                count: viewedStudent.attempts.length,
+              });
+            }}
+            disabled={viewedStudent.attempts.length === 0 || isResetting || !targetStudentUid}
             className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Trash2 className="h-4 w-4" />
-            <span>Reset Profile Progress</span>
+            <span>{isResetting ? "Deleting..." : "Reset Profile Progress"}</span>
           </button>
+
+          {user.role === "admin" && onDeleteStudentRecord && targetStudentUid && targetStudentUid !== user.uid && (
+            <button
+              onClick={() =>
+                setPendingDelete({
+                  kind: "delete_student",
+                  uid: targetStudentUid,
+                  label: viewedStudent.name,
+                })
+              }
+              disabled={isResetting}
+              className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Trash2 className="h-4 w-4" />
+              <span>Delete Student Record</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -619,14 +623,7 @@ export function StudentProgressDashboard({
                             {stud.name.charAt(0)}
                           </div>
                           <div className="truncate">
-                            <div className="flex items-center gap-1.5">
-                              <p className="text-xs font-bold truncate leading-snug">{stud.name}</p>
-                              {stud.password && (
-                                <span title="Protected by student password">
-                                  <Lock className={`h-3 w-3 ${isSelected ? "text-blue-100" : "text-emerald-500"}`} />
-                                </span>
-                              )}
-                            </div>
+                            <p className="text-xs font-bold truncate leading-snug">{stud.name}</p>
                             <p className={`text-[9px] truncate font-mono ${isSelected ? "text-blue-100" : "text-slate-400"}`}>
                               {stud.email}
                             </p>
@@ -670,29 +667,12 @@ export function StudentProgressDashboard({
                 </span>
                 <div className="flex items-center gap-2">
                   <h3 className="text-lg font-extrabold truncate">{viewedStudent.name}</h3>
-                  {viewedStudent.password && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-bold">
-                      <Lock className="h-3 w-3" />
-                      <span>Password Protected</span>
-                    </span>
-                  )}
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-[10px] font-bold">
+                    <ShieldCheck className="h-3 w-3" />
+                    <span>Google Verified</span>
+                  </span>
                 </div>
                 <p className="text-xs text-slate-400 font-mono truncate">{viewedStudent.email}</p>
-                {user.role === "student" && (
-                  <button
-                    onClick={() => {
-                      setNewPassword("");
-                      setConfirmNewPassword("");
-                      setPasswordError("");
-                      setPasswordSuccess("");
-                      setShowPasswordModal(true);
-                    }}
-                    className="mt-1 text-[11px] font-bold text-blue-300 hover:text-white flex items-center gap-1 transition cursor-pointer underline underline-offset-2"
-                  >
-                    <KeyRound className="h-3 w-3" />
-                    <span>{viewedStudent.password ? "Change Privacy Password" : "Set Password for Privacy"}</span>
-                  </button>
-                )}
               </div>
             </div>
 
@@ -782,13 +762,14 @@ export function StudentProgressDashboard({
                         <th className="px-6 py-3">Accuracy</th>
                         <th className="px-6 py-3">Submission Timestamp</th>
                         <th className="px-6 py-3">Feedback Descriptor</th>
+                        {user.role === "admin" && <th className="px-6 py-3 text-right">Action</th>}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium text-slate-700">
                       {[...viewedStudent.attempts].sort((a,b) => b.timestamp - a.timestamp).map((att, idx) => {
                         const pct = Math.round((att.score / att.total) * 100);
                         return (
-                          <tr key={idx} className="hover:bg-slate-50/50 transition">
+                          <tr key={att.id || idx} className="hover:bg-slate-50/50 transition">
                             <td className="px-6 py-4 font-extrabold text-slate-900">{att.moduleTitle}</td>
                             <td className="px-6 py-4">
                               <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md font-bold text-[10px]">
@@ -813,6 +794,27 @@ export function StudentProgressDashboard({
                             <td className="px-6 py-4 font-semibold text-[10px]">
                               {pct >= 90 ? "👑 Scholar Performance" : pct >= 70 ? "🚀 Strong Standing" : "🌱 Target Practice"}
                             </td>
+                            {user.role === "admin" && (
+                              <td className="px-6 py-4 text-right">
+                                {att.id && onDeleteAttempt && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setPendingDelete({
+                                        kind: "delete_attempt",
+                                        attemptId: att.id!,
+                                        label: `${att.moduleTitle} (${att.score}/${att.total})`,
+                                      })
+                                    }
+                                    className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-100 transition cursor-pointer"
+                                    title="Delete quiz record"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                    <span>Delete</span>
+                                  </button>
+                                )}
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -827,137 +829,44 @@ export function StudentProgressDashboard({
 
       </div>
 
-      {/* Student Password Settings Modal */}
-      {showPasswordModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in text-left">
-          <div className="relative w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl border border-slate-100 p-6 space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <div className="h-9 w-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                  <KeyRound className="h-5 w-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900">Student Privacy Password</h3>
-                  <p className="text-[11px] text-slate-500">Keep friends from logging in with your email</p>
-                </div>
+      {/* Confirmation Modal ("Are you sure?") */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-gray-900/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-xl border border-gray-100 text-left space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-xl bg-red-50 border border-red-100 flex items-center justify-center text-red-600 shrink-0">
+                <AlertTriangle className="h-5 w-5" />
               </div>
-              <button
-                onClick={() => setShowPasswordModal(false)}
-                className="text-slate-400 hover:text-slate-700 p-1 rounded-lg cursor-pointer"
-              >
-                <X className="h-5 w-5" />
-              </button>
+              <div className="space-y-1">
+                <h3 className="text-base font-bold text-gray-900">Are you sure?</h3>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  {pendingDelete.kind === "reset_student"
+                    ? `This will permanently delete all ${pendingDelete.count} quiz progress record(s) for ${pendingDelete.label}. This action cannot be undone.`
+                    : pendingDelete.kind === "delete_student"
+                    ? `This will permanently delete the student profile and all quiz progress records for ${pendingDelete.label}. This action cannot be undone.`
+                    : `This will permanently delete the quiz record "${pendingDelete.label}". This action cannot be undone.`}
+                </p>
+              </div>
             </div>
 
-            {passwordError && (
-              <div className="flex items-center gap-2 rounded-xl bg-red-50 p-3 text-xs text-red-700 border border-red-100">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{passwordError}</span>
-              </div>
-            )}
-
-            {passwordSuccess && (
-              <div className="flex items-center gap-2 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-800 border border-emerald-200">
-                <ShieldCheck className="h-4 w-4 shrink-0 text-emerald-600" />
-                <span>{passwordSuccess}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleSaveStudentPassword} className="space-y-4">
-              <div className="space-y-1.5">
-                <div className="flex justify-between items-center">
-                  <label className="text-xs font-semibold text-slate-700">
-                    {viewedStudent.password ? "New Password" : "Create Password"}
-                  </label>
-                  <span className="text-[10px] text-slate-400">Min 3 characters</span>
-                </div>
-                <div className="relative">
-                  <input
-                    type={showNewPassword ? "text" : "password"}
-                    placeholder="Enter private password..."
-                    value={newPassword}
-                    onChange={(e) => {
-                      setNewPassword(e.target.value);
-                      setPasswordError("");
-                    }}
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2 pr-10 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowNewPassword(!showNewPassword)}
-                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {newPassword.trim().length > 0 && (
-                <div className="space-y-1.5 animate-fade-in">
-                  <label className="text-xs font-semibold text-slate-700">Confirm Password</label>
-                  <input
-                    type={showNewPassword ? "text" : "password"}
-                    placeholder="Confirm new password"
-                    value={confirmNewPassword}
-                    onChange={(e) => {
-                      setConfirmNewPassword(e.target.value);
-                      setPasswordError("");
-                    }}
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    required
-                  />
-                </div>
-              )}
-
-              <div className="rounded-xl bg-slate-50 p-3 border border-slate-100 text-[11px] text-slate-600 space-y-1">
-                <p className="font-semibold text-slate-800 flex items-center gap-1">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                  <span>Privacy Protection</span>
-                </p>
-                <p>
-                  Once set, anyone trying to log in using your email address will be required to provide your private password.
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2 pt-2">
-                <button
-                  type="submit"
-                  className="flex-1 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-blue-100 hover:bg-blue-700 transition cursor-pointer"
-                >
-                  Save Password
-                </button>
-                {viewedStudent.password && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const updatedStudents = students.map((s) => {
-                        if (s.email.toLowerCase() === user.email.toLowerCase()) {
-                          const { password, ...rest } = s;
-                          return rest;
-                        }
-                        return s;
-                      });
-                      onUpdateStudents(updatedStudents);
-                      setPasswordSuccess("Password removed. Your account can now be accessed with just your email.");
-                      setTimeout(() => {
-                        setShowPasswordModal(false);
-                        setPasswordSuccess("");
-                      }, 1200);
-                    }}
-                    className="rounded-xl border border-red-200 bg-red-50 hover:bg-red-100 px-3 py-2.5 text-xs font-bold text-red-700 transition cursor-pointer"
-                  >
-                    Remove
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setShowPasswordModal(false)}
-                  className="rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50 transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingDelete(null)}
+                disabled={isResetting}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={isResetting}
+                className="rounded-xl bg-red-600 px-4 py-2 text-xs font-bold text-white hover:bg-red-700 shadow-sm transition cursor-pointer disabled:opacity-50"
+              >
+                {isResetting ? "Deleting..." : "Yes, Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}

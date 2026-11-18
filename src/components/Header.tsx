@@ -1,11 +1,13 @@
-import { GraduationCap, LogIn, LogOut, Award, Sparkles, BarChart3, LayoutDashboard } from "lucide-react";
+import { GraduationCap, LogIn, LogOut, Award, Sparkles, BarChart3, LayoutDashboard, Lock, ShieldAlert, ArrowLeft } from "lucide-react";
 import { UserProfile, ViewMode } from "../types";
 
 interface HeaderProps {
   user: UserProfile | null;
+  isAdminRoute?: boolean;
   onLoginClick: () => void;
   onLogout: () => void;
   onGoHome: () => void;
+  onToggleAdminRoute?: () => void;
   activeModuleName?: string;
   score?: number;
   viewMode: ViewMode;
@@ -14,9 +16,11 @@ interface HeaderProps {
 
 export function Header({
   user,
+  isAdminRoute = false,
   onLoginClick,
   onLogout,
   onGoHome,
+  onToggleAdminRoute,
   activeModuleName,
   score,
   viewMode,
@@ -49,16 +53,16 @@ export function Header({
           </div>
           <div className="min-w-0">
             <h1 className="text-base sm:text-lg font-bold tracking-tight text-gray-900 font-sans leading-tight whitespace-nowrap">
-              Student Learning Quiz
+              Student Quiz Learning
             </h1>
             <p className="hidden sm:block text-[11px] font-medium text-gray-500 leading-tight whitespace-nowrap">
-              Clean Slate Language Engine
+              Interactive Language Studio
             </p>
           </div>
         </button>
 
-        {/* Navigation Tabs (Only when logged in) */}
-        {user && (
+        {/* Navigation Tabs */}
+        <div className="flex items-center gap-1.5 shrink-0">
           <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl shrink-0">
             <button
               onClick={() => onViewModeChange("dashboard")}
@@ -83,11 +87,40 @@ export function Header({
               }`}
             >
               <BarChart3 className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">{user.role === "admin" ? "Classroom Progress" : "My Progress"}</span>
+              <span className="hidden sm:inline">
+                {user?.role === "admin" ? "Classroom Progress" : "My Progress"}
+              </span>
               <span className="sm:hidden">Progress</span>
+              {!user && <Lock className="h-3 w-3 text-slate-400" />}
             </button>
           </div>
-        )}
+
+          {onToggleAdminRoute && (
+            <button
+              onClick={onToggleAdminRoute}
+              id="nav-btn-admin"
+              className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                isAdminRoute
+                  ? "bg-slate-900 text-white border-slate-900 hover:bg-slate-800"
+                  : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
+              }`}
+              title={isAdminRoute ? "Return to Student View" : "Open Admin Login / Portal"}
+            >
+              {isAdminRoute ? (
+                <>
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Student View</span>
+                  <span className="sm:hidden">Exit</span>
+                </>
+              ) : (
+                <>
+                  <ShieldAlert className="h-3.5 w-3.5" />
+                  <span>Admin</span>
+                </>
+              )}
+            </button>
+          )}
+        </div>
 
         {/* Middle: Live Learning Stats Context */}
         {activeModuleName && (
@@ -139,10 +172,10 @@ export function Header({
             </button>
           )}
 
-          {/* Sparkle decorative indicator showing offline/memory state */}
-          <div className="hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-100 text-[11px] font-medium">
-            <Sparkles className="h-3.5 w-3.5 animate-pulse" />
-            <span>Memory Mode Active</span>
+          {/* Cloud sync indicator */}
+          <div className="hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 text-[11px] font-medium">
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>Cloud Sync Active</span>
           </div>
         </div>
       </div>
