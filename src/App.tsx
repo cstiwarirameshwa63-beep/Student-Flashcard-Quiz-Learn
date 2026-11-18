@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Header } from "./components/Header";
 import { AuthModal } from "./components/AuthModal";
 import { FlashcardDeck } from "./components/FlashcardDeck";
@@ -26,16 +26,38 @@ import {
   ArrowRightLeft
 } from "lucide-react";
 
-// Student directory starts empty with real student data recorded as learners take quizzes
-const INITIAL_STUDENTS: StudentProgressData[] = [];
+const STORAGE_KEY = "language_quiz_student_accounts_v1";
+
+function getInitialStudents(): StudentProgressData[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Graceful fallback if storage is restricted
+  }
+  return [];
+}
 
 export default function App() {
-  // Global React Memory State (Absolutely no localStorage/sessionStorage used!)
   const [user, setUser] = useState<UserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
-  const [students, setStudents] = useState<StudentProgressData[]>(INITIAL_STUDENTS);
+  const [students, setStudents] = useState<StudentProgressData[]>(getInitialStudents);
+
+  // Sync registered student accounts and credentials to persistent storage
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(students));
+    } catch {
+      // Graceful fallback
+    }
+  }, [students]);
   
   // Keep modules list in React memory state so admins can dynamically edit questions/quiz options
   const [modules, setModules] = useState<LearningModule[]>(STATIC_MODULES);
@@ -675,8 +697,8 @@ export default function App() {
                       </div>
 
                       {/* Dual Interaction triggers / Triple if Admin */}
-                      <div className={`grid gap-3 pt-6 border-t border-gray-50 mt-6 ${
-                        user?.role === "admin" ? "grid-cols-3" : "grid-cols-2"
+                      <div className={`grid gap-2.5 sm:gap-3 pt-5 sm:pt-6 border-t border-gray-50 mt-6 ${
+                        user?.role === "admin" ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2"
                       }`}>
                         <button
                           onClick={() => handleSelectModule(module.id, "study")}
