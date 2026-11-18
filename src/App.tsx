@@ -1,5 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { onAuthStateChanged, signOut, User as FirebaseUser } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  getRedirectResult,
+  signOut,
+  User as FirebaseUser,
+} from "firebase/auth";
 import {
   collection,
   doc,
@@ -18,6 +23,7 @@ import {
   auth,
   db,
   isAllowedAdminEmail,
+  formatFirebaseAuthError,
   OperationType,
   handleFirestoreError,
 } from "./firebase";
@@ -75,6 +81,8 @@ const checkIsAdminPath = () => {
 export default function App() {
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(checkIsAdminPath);
   const [adminAccessDenied, setAdminAccessDenied] = useState("");
+  const [authExternalError, setAuthExternalError] = useState("");
+  const [firestoreFatalError, setFirestoreFatalError] = useState<Error | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -159,111 +167,163 @@ export default function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
+  // Restore pending quiz/progress redirect and surface any redirect sign-in errors
+  useEffect(() => {
+    try {
+      const savedName = sessionStorage.getItem("sql_pending_name");
+      if (savedName) {
+        pendingLoginRef.current = { preferredName: savedName };
+        sessionStorage.removeItem("sql_pending_name");
+      }
+      const savedRedirect = sessionStorage.getItem("sql_pending_redirect");
+      if (savedRedirect) {
+        pendingRedirectRef.current = JSON.parse(savedRedirect) as PendingRedirect;
+        sessionStorage.removeItem("sql_pending_redirect");
+      }
+    } catch {
+      // sessionStorage unavailable
+    }
+
+    getRedirectResult(auth).catch((err: unknown) => {
+      const details = formatFirebaseAuthError(err, window.location.hostname);
+      if (checkIsAdminPath()) {
+        setAdminAccessDenied(`${details.message} (${details.code})`);
+      } else {
+        setAuthExternalError(`${details.message} (${details.code})`);
+        setShowAuthModal(true);
+      }
+    });
+  }, []);
+
   // Firebase Auth state listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      if (!fbUser) {
-        setFirebaseUser(null);
-        setUser(null);
-        setStudentDocs([]);
-        setAllAttempts([]);
-        setActiveModuleId(null);
-        setViewMode("dashboard");
-        setAuthReady(true);
-        return;
-      }
-
-      const isAllowedAdmin = Boolean(
-        fbUser.emailVerified && isAllowedAdminEmail(fbUser.email)
-      );
-
-      if (isAdminRoute && !isAllowedAdmin) {
-        setAdminAccessDenied(
-          "Access denied. This Google account is not authorized for the Admin Portal."
-        );
-        await signOut(auth);
-        setFirebaseUser(null);
-        setUser(null);
-        setStudentDocs([]);
-        setAllAttempts([]);
-        setAuthReady(true);
-        return;
-      }
-
-      setAdminAccessDenied("");
-      setFirebaseUser(fbUser);
-
-      const opts = pendingLoginRef.current;
-      pendingLoginRef.current = {};
-
-      // Only grant admin role inside the hidden /admin route for the allowlisted admin email
-      const roleToUse: "student" | "admin" =
-        isAdminRoute && isAllowedAdmin ? "admin" : "student";
-
-      const fallbackName =
-        fbUser.displayName || fbUser.email?.split("@")[0] || "Learner";
-      const requestedName = (opts.preferredName || fallbackName).trim().slice(0, 100);
-      const cleanEmail = (fbUser.email || "user@example.com").slice(0, 150);
-
-      const studentRef = doc(db, "students", fbUser.uid);
-      let finalName = requestedName;
-      let finalAvatarSeed = fbUser.uid.slice(0, 150);
-
       try {
-        const existingSnap = await getDoc(studentRef);
-        if (!existingSnap.exists()) {
-          await setDoc(studentRef, {
-            uid: fbUser.uid,
-            name: requestedName,
-            email: cleanEmail,
-            avatarSeed: finalAvatarSeed,
-            role: isAllowedAdmin ? "admin" : "student",
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          });
-        } else {
-          const data = existingSnap.data() as StoredStudentDoc;
-          finalName = opts.preferredName ? requestedName : data.name || requestedName;
-          finalAvatarSeed = data.avatarSeed || finalAvatarSeed;
-          if (opts.preferredName && opts.preferredName !== data.name) {
-            await updateDoc(studentRef, {
+        if (!fbUser) {
+          setFirebaseUser(null);
+          setUser(null);
+          setStudentDocs([]);
+          setAllAttempts([]);
+          setActiveModuleId(null);
+          setViewMode("dashboard");
+          return;
+        }
+
+        const isAllowedAdmin = Boolean(
+          fbUser.emailVerified && isAllowedAdminEmail(fbUser.email)
+        );
+
+        if (isAdminRoute && !isAllowedAdmin) {
+          setAdminAccessDenied(
+            "Access denied. This Google account is not authorized for the Admin Portal."
+          );
+          await signOut(auth);
+          setFirebaseUser(null);
+          setUser(null);
+          setStudentDocs([]);
+          setAllAttempts([]);
+          return;
+        }
+
+        if (!fbUser.email || !fbUser.emailVerified) {
+          const msg = "Your Google account must have a verified email address to sign in.";
+          if (isAdminRoute) {
+            setAdminAccessDenied(msg);
+          } else {
+            setAuthExternalError(msg);
+            setShowAuthModal(true);
+          }
+          await signOut(auth);
+          setFirebaseUser(null);
+          setUser(null);
+          return;
+        }
+
+        setAdminAccessDenied("");
+        setAuthExternalError("");
+        setFirebaseUser(fbUser);
+
+        const opts = pendingLoginRef.current;
+        pendingLoginRef.current = {};
+
+        // Only grant admin role inside the hidden /admin route for the allowlisted admin email
+        const roleToUse: "student" | "admin" =
+          isAdminRoute && isAllowedAdmin ? "admin" : "student";
+
+        const fallbackName =
+          fbUser.displayName || fbUser.email.split("@")[0] || "Learner";
+        const requestedName = (opts.preferredName || fallbackName).trim().slice(0, 100);
+        const cleanEmail = fbUser.email.slice(0, 150);
+
+        const studentRef = doc(db, "students", fbUser.uid);
+        let finalName = requestedName;
+        let finalAvatarSeed = fbUser.uid.slice(0, 150);
+
+        try {
+          const existingSnap = await getDoc(studentRef);
+          if (!existingSnap.exists()) {
+            await setDoc(studentRef, {
+              uid: fbUser.uid,
               name: requestedName,
+              email: cleanEmail,
+              avatarSeed: finalAvatarSeed,
+              role: isAllowedAdmin ? "admin" : "student",
+              createdAt: serverTimestamp(),
               updatedAt: serverTimestamp(),
             });
+          } else {
+            const data = existingSnap.data() as StoredStudentDoc;
+            finalName = opts.preferredName ? requestedName : data.name || requestedName;
+            finalAvatarSeed = data.avatarSeed || finalAvatarSeed;
+            if (opts.preferredName && opts.preferredName !== data.name) {
+              await updateDoc(studentRef, {
+                name: requestedName,
+                updatedAt: serverTimestamp(),
+              });
+            }
+          }
+        } catch (err) {
+          try {
+            handleFirestoreError(err, OperationType.WRITE, `students/${fbUser.uid}`);
+          } catch (structuredErr) {
+            setFirestoreFatalError(
+              structuredErr instanceof Error
+                ? structuredErr
+                : new Error(String(structuredErr))
+            );
+            return;
           }
         }
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `students/${fbUser.uid}`);
-      }
 
-      setUser({
-        uid: fbUser.uid,
-        name: finalName,
-        email: cleanEmail,
-        avatarSeed: finalAvatarSeed,
-        role: roleToUse,
-      });
-      setShowAuthModal(false);
-      setAuthLockedPrompt(false);
+        setUser({
+          uid: fbUser.uid,
+          name: finalName,
+          email: cleanEmail,
+          avatarSeed: finalAvatarSeed,
+          role: roleToUse,
+        });
+        setShowAuthModal(false);
+        setAuthLockedPrompt(false);
 
-      const redirectTarget = pendingRedirectRef.current;
-      pendingRedirectRef.current = null;
-      if (!isAdminRoute && redirectTarget) {
-        if (redirectTarget.type === "quiz") {
-          setQuizProgress({
-            currentCardIndex: 0,
-            score: 0,
-            answers: {},
-            isCompleted: false,
-          });
-          setActiveModuleId(redirectTarget.moduleId);
-          setViewMode("quiz");
-        } else if (redirectTarget.type === "progress") {
-          setViewMode("progress");
+        const redirectTarget = pendingRedirectRef.current;
+        pendingRedirectRef.current = null;
+        if (!isAdminRoute && redirectTarget) {
+          if (redirectTarget.type === "quiz") {
+            setQuizProgress({
+              currentCardIndex: 0,
+              score: 0,
+              answers: {},
+              isCompleted: false,
+            });
+            setActiveModuleId(redirectTarget.moduleId);
+            setViewMode("quiz");
+          } else if (redirectTarget.type === "progress") {
+            setViewMode("progress");
+          }
         }
+      } finally {
+        setAuthReady(true);
       }
-
-      setAuthReady(true);
     });
 
     return () => unsubscribe();
@@ -288,7 +348,13 @@ export default function App() {
         setModuleOverrides(overrides);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.LIST, "modules");
+        try {
+          handleFirestoreError(err, OperationType.LIST, "modules");
+        } catch (structuredErr) {
+          setFirestoreFatalError(
+            structuredErr instanceof Error ? structuredErr : new Error(String(structuredErr))
+          );
+        }
       }
     );
 
@@ -329,7 +395,13 @@ export default function App() {
         setAllAttempts(list);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.LIST, "quizAttempts");
+        try {
+          handleFirestoreError(err, OperationType.LIST, "quizAttempts");
+        } catch (structuredErr) {
+          setFirestoreFatalError(
+            structuredErr instanceof Error ? structuredErr : new Error(String(structuredErr))
+          );
+        }
       }
     );
 
@@ -355,7 +427,13 @@ export default function App() {
         setStudentDocs(list);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.LIST, "students");
+        try {
+          handleFirestoreError(err, OperationType.LIST, "students");
+        } catch (structuredErr) {
+          setFirestoreFatalError(
+            structuredErr instanceof Error ? structuredErr : new Error(String(structuredErr))
+          );
+        }
       }
     );
 
@@ -603,6 +681,28 @@ export default function App() {
     pendingLoginRef.current = { preferredName };
   };
 
+  const handleLoginCancel = () => {
+    pendingLoginRef.current = {};
+  };
+
+  const handlePrepareRedirect = (preferredName?: string) => {
+    try {
+      if (preferredName) {
+        sessionStorage.setItem("sql_pending_name", preferredName);
+      } else {
+        sessionStorage.removeItem("sql_pending_name");
+      }
+      if (pendingRedirectRef.current) {
+        sessionStorage.setItem(
+          "sql_pending_redirect",
+          JSON.stringify(pendingRedirectRef.current)
+        );
+      }
+    } catch {
+      // sessionStorage unavailable
+    }
+  };
+
   // Calculate session metrics
   const totalQuizzesCompleted = sessionStats.length;
   const averageCorrectRate =
@@ -613,6 +713,10 @@ export default function App() {
             100
         )
       : 0;
+
+  if (firestoreFatalError) {
+    throw firestoreFatalError;
+  }
 
   if (!authReady) {
     return (
@@ -1156,9 +1260,14 @@ export default function App() {
           onClose={() => {
             setShowAuthModal(false);
             setAuthLockedPrompt(false);
+            setAuthExternalError("");
+            pendingLoginRef.current = {};
             pendingRedirectRef.current = null;
           }}
           onLoginSuccess={handleLoginSuccess}
+          onLoginCancel={handleLoginCancel}
+          onPrepareRedirect={handlePrepareRedirect}
+          externalError={authExternalError}
           lockedPrompt={authLockedPrompt}
         />
       )}

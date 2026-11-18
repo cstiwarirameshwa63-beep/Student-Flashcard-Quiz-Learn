@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { signInWithPopup } from "firebase/auth";
+import { useState, useEffect } from "react";
+import { signInWithPopup, signInWithRedirect } from "firebase/auth";
 import {
   X,
   AlertCircle,
@@ -10,16 +10,22 @@ import {
   Copy,
   Check,
   ExternalLink,
+  ArrowRight,
 } from "lucide-react";
 import {
   auth,
   googleProvider,
+  formatFirebaseAuthError,
+  AuthErrorDetails,
 } from "../firebase";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 interface AuthModalProps {
   onClose?: () => void;
   onLoginSuccess?: (preferredName?: string) => void;
+  onLoginCancel?: () => void;
+  onPrepareRedirect?: (preferredName?: string) => void;
+  externalError?: string;
   initialMode?: "signin" | "signup";
   lockedPrompt?: boolean;
 }
@@ -27,20 +33,33 @@ interface AuthModalProps {
 export function AuthModal({
   onClose,
   onLoginSuccess,
+  onLoginCancel,
+  onPrepareRedirect,
+  externalError = "",
   initialMode = "signin",
   lockedPrompt = false,
 }: AuthModalProps) {
   const [authMode, setAuthMode] = useState<"signin" | "signup">(initialMode);
   const [preferredName, setPreferredName] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
-  const [error, setError] = useState("");
-  const [unauthorizedHost, setUnauthorizedHost] = useState("");
+  const [errorDetails, setErrorDetails] = useState<AuthErrorDetails | null>(
+    externalError ? { code: "auth/error", message: externalError } : null
+  );
   const [copiedHost, setCopiedHost] = useState(false);
 
+  const isTopLevelWindow =
+    typeof window !== "undefined" && window.self === window.top;
+
+  useEffect(() => {
+    if (externalError) {
+      setErrorDetails({ code: "auth/error", message: externalError });
+    }
+  }, [externalError]);
+
   const handleCopyHost = async () => {
-    if (!unauthorizedHost) return;
+    if (!errorDetails?.unauthorizedHost) return;
     try {
-      await navigator.clipboard.writeText(unauthorizedHost);
+      await navigator.clipboard.writeText(errorDetails.unauthorizedHost);
       setCopiedHost(true);
       setTimeout(() => setCopiedHost(false), 2000);
     } catch {
@@ -48,33 +67,61 @@ export function AuthModal({
     }
   };
 
+  const startRedirectSignIn = async () => {
+    setErrorDetails(null);
+    setIsSigningIn(true);
+    const trimmedName = preferredName.trim() || undefined;
+    if (onPrepareRedirect) {
+      onPrepareRedirect(trimmedName);
+    }
+    try {
+      await signInWithRedirect(auth, googleProvider);
+    } catch (err: unknown) {
+      setErrorDetails(formatFirebaseAuthError(err, window.location.hostname));
+      setIsSigningIn(false);
+    }
+  };
+
   const handleGoogleSignIn = async () => {
-    setError("");
-    setUnauthorizedHost("");
+    setErrorDetails(null);
     setIsSigningIn(true);
 
+    const trimmedName = preferredName.trim() || undefined;
     if (onLoginSuccess) {
-      onLoginSuccess(preferredName.trim() || undefined);
+      onLoginSuccess(trimmedName);
     }
 
     try {
       await signInWithPopup(auth, googleProvider);
       if (onClose) onClose();
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code;
-      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-        setError("Sign-in popup was closed before completing authentication.");
-      } else if (code === "auth/popup-blocked") {
-        setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
-      } else if (code === "auth/unauthorized-domain") {
-        const host = window.location.hostname;
-        setUnauthorizedHost(host);
-        setError(
-          `This website domain (${host}) needs to be added to Firebase Authorized domains once before Google Sign-In can work here.`
-        );
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
+      if (onLoginCancel) {
+        onLoginCancel();
       }
+      const details = formatFirebaseAuthError(err, window.location.hostname);
+
+      // On standalone domains (not inside AI Studio iframe), automatically fall back to redirect
+      // if the browser blocked the popup or restricted cross-origin iframe storage
+      if (
+        isTopLevelWindow &&
+        (details.code === "auth/popup-blocked" ||
+          details.code === "auth/web-storage-unsupported" ||
+          details.code === "auth/operation-not-supported-in-this-environment")
+      ) {
+        if (onPrepareRedirect) {
+          onPrepareRedirect(trimmedName);
+        }
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr: unknown) {
+          setErrorDetails(formatFirebaseAuthError(redirectErr, window.location.hostname));
+          setIsSigningIn(false);
+          return;
+        }
+      }
+
+      setErrorDetails(details);
     } finally {
       setIsSigningIn(false);
     }
@@ -126,8 +173,7 @@ export function AuthModal({
             type="button"
             onClick={() => {
               setAuthMode("signin");
-              setError("");
-              setUnauthorizedHost("");
+              setErrorDetails(null);
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
               authMode === "signin"
@@ -142,8 +188,7 @@ export function AuthModal({
             type="button"
             onClick={() => {
               setAuthMode("signup");
-              setError("");
-              setUnauthorizedHost("");
+              setErrorDetails(null);
             }}
             className={`flex items-center justify-center gap-2 py-2.5 text-xs font-bold transition rounded-lg cursor-pointer ${
               authMode === "signup"
@@ -158,17 +203,25 @@ export function AuthModal({
 
         {/* Auth Body */}
         <div className="p-4 sm:p-6 space-y-4">
-          {error && (
+          {errorDetails && (
             <div className="rounded-xl bg-red-50 p-3.5 text-xs text-red-800 border border-red-100 leading-relaxed space-y-2.5">
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-600" />
-                <span>{error}</span>
+                <div className="space-y-1">
+                  <p className="font-semibold">{errorDetails.message}</p>
+                  {errorDetails.code && errorDetails.code !== "auth/error" && (
+                    <p className="text-[10px] font-mono text-red-600/80">
+                      Error code: {errorDetails.code}
+                    </p>
+                  )}
+                </div>
               </div>
-              {unauthorizedHost && (
+
+              {errorDetails.unauthorizedHost && (
                 <div className="pl-6 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <code className="rounded-lg bg-white px-2 py-1 text-[11px] font-mono text-red-900 border border-red-200 select-all">
-                      {unauthorizedHost}
+                      {errorDetails.unauthorizedHost}
                     </code>
                     <button
                       type="button"
@@ -199,6 +252,20 @@ export function AuthModal({
                   </a>
                 </div>
               )}
+
+              {isTopLevelWindow && errorDetails.canRetryWithRedirect && (
+                <div className="pl-6">
+                  <button
+                    type="button"
+                    onClick={startRedirectSignIn}
+                    disabled={isSigningIn}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-[11px] font-bold text-blue-700 border border-blue-200 hover:bg-blue-50 transition cursor-pointer"
+                  >
+                    <span>Continue with Redirect Sign-In</span>
+                    <ArrowRight className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -215,7 +282,7 @@ export function AuthModal({
                 value={preferredName}
                 onChange={(e) => {
                   setPreferredName(e.target.value);
-                  setError("");
+                  setErrorDetails(null);
                 }}
                 className="w-full rounded-xl border border-gray-200 px-3.5 py-2 text-sm text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
               />

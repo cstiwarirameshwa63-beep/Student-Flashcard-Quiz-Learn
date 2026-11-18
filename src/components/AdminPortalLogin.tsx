@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { signInWithPopup, signOut } from "firebase/auth";
+import { signInWithPopup, signInWithRedirect, signOut } from "firebase/auth";
 import {
   ShieldAlert,
   AlertCircle,
@@ -10,8 +10,15 @@ import {
   Copy,
   Check,
   ExternalLink,
+  ArrowRight,
 } from "lucide-react";
-import { auth, googleProvider, isAllowedAdminEmail } from "../firebase";
+import {
+  auth,
+  googleProvider,
+  isAllowedAdminEmail,
+  formatFirebaseAuthError,
+  AuthErrorDetails,
+} from "../firebase";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 interface AdminPortalLoginProps {
@@ -21,20 +28,24 @@ interface AdminPortalLoginProps {
 
 export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPortalLoginProps) {
   const [isSigningIn, setIsSigningIn] = useState(false);
-  const [error, setError] = useState(externalError);
-  const [unauthorizedHost, setUnauthorizedHost] = useState("");
+  const [errorDetails, setErrorDetails] = useState<AuthErrorDetails | null>(
+    externalError ? { code: "auth/access-denied", message: externalError } : null
+  );
   const [copiedHost, setCopiedHost] = useState(false);
+
+  const isTopLevelWindow =
+    typeof window !== "undefined" && window.self === window.top;
 
   useEffect(() => {
     if (externalError) {
-      setError(externalError);
+      setErrorDetails({ code: "auth/access-denied", message: externalError });
     }
   }, [externalError]);
 
   const handleCopyHost = async () => {
-    if (!unauthorizedHost) return;
+    if (!errorDetails?.unauthorizedHost) return;
     try {
-      await navigator.clipboard.writeText(unauthorizedHost);
+      await navigator.clipboard.writeText(errorDetails.unauthorizedHost);
       setCopiedHost(true);
       setTimeout(() => setCopiedHost(false), 2000);
     } catch {
@@ -42,9 +53,19 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
     }
   };
 
+  const startRedirectSignIn = async () => {
+    setErrorDetails(null);
+    setIsSigningIn(true);
+    try {
+      await signInWithRedirect(auth, googleProvider);
+    } catch (err: unknown) {
+      setErrorDetails(formatFirebaseAuthError(err, window.location.hostname));
+      setIsSigningIn(false);
+    }
+  };
+
   const handleAdminSignIn = async () => {
-    setError("");
-    setUnauthorizedHost("");
+    setErrorDetails(null);
     setIsSigningIn(true);
 
     try {
@@ -53,24 +74,32 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
 
       if (!fbUser.emailVerified || !isAllowedAdminEmail(fbUser.email)) {
         await signOut(auth);
-        setError("Access denied. This Google account is not authorized for the Admin Portal.");
+        setErrorDetails({
+          code: "auth/access-denied",
+          message: "Access denied. This Google account is not authorized for the Admin Portal.",
+        });
         return;
       }
     } catch (err: unknown) {
-      const code = (err as { code?: string })?.code;
-      if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
-        setError("Sign-in popup was closed before completing authentication.");
-      } else if (code === "auth/popup-blocked") {
-        setError("Popup was blocked by your browser. Please allow popups for this site and try again.");
-      } else if (code === "auth/unauthorized-domain") {
-        const host = window.location.hostname;
-        setUnauthorizedHost(host);
-        setError(
-          `This website domain (${host}) needs to be added to Firebase Authorized domains once before Google Sign-In can work here.`
-        );
-      } else {
-        setError(err instanceof Error ? err.message : "Failed to sign in with Google.");
+      const details = formatFirebaseAuthError(err, window.location.hostname);
+
+      if (
+        isTopLevelWindow &&
+        (details.code === "auth/popup-blocked" ||
+          details.code === "auth/web-storage-unsupported" ||
+          details.code === "auth/operation-not-supported-in-this-environment")
+      ) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirectErr: unknown) {
+          setErrorDetails(formatFirebaseAuthError(redirectErr, window.location.hostname));
+          setIsSigningIn(false);
+          return;
+        }
       }
+
+      setErrorDetails(details);
     } finally {
       setIsSigningIn(false);
     }
@@ -107,20 +136,28 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
         </div>
 
         <div className="p-6 space-y-4">
-          {error && (
+          {errorDetails && (
             <div
               role="alert"
               className="rounded-xl bg-red-50 p-3.5 text-xs text-red-800 border border-red-100 leading-relaxed space-y-2.5 font-semibold"
             >
               <div className="flex items-start gap-2">
                 <AlertCircle className="h-4 w-4 mt-0.5 shrink-0 text-red-600" />
-                <span>{error}</span>
+                <div className="space-y-1">
+                  <p>{errorDetails.message}</p>
+                  {errorDetails.code && errorDetails.code !== "auth/access-denied" && (
+                    <p className="text-[10px] font-mono font-normal text-red-600/80">
+                      Error code: {errorDetails.code}
+                    </p>
+                  )}
+                </div>
               </div>
-              {unauthorizedHost && (
+
+              {errorDetails.unauthorizedHost && (
                 <div className="pl-6 space-y-2 font-normal">
                   <div className="flex flex-wrap items-center gap-2">
                     <code className="rounded-lg bg-white px-2 py-1 text-[11px] font-mono text-red-900 border border-red-200 select-all">
-                      {unauthorizedHost}
+                      {errorDetails.unauthorizedHost}
                     </code>
                     <button
                       type="button"
@@ -149,6 +186,20 @@ export function AdminPortalLogin({ externalError = "", onBackToHome }: AdminPort
                     <span>Open Firebase Console → Authorized domains</span>
                     <ExternalLink className="h-3 w-3" />
                   </a>
+                </div>
+              )}
+
+              {isTopLevelWindow && errorDetails.canRetryWithRedirect && (
+                <div className="pl-6 font-normal">
+                  <button
+                    type="button"
+                    onClick={startRedirectSignIn}
+                    disabled={isSigningIn}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-[11px] font-bold text-blue-700 border border-blue-200 hover:bg-blue-50 transition cursor-pointer"
+                  >
+                    <span>Continue with Redirect Sign-In</span>
+                    <ArrowRight className="h-3 w-3" />
+                  </button>
                 </div>
               )}
             </div>
